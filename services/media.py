@@ -391,7 +391,8 @@ def send_large_file_via_userbot(chat_id, file_path, caption=None, is_video=True,
 # conversion needs ffmpeg too. It's a normal playable audio file either
 # way; Telegram's audio player handles both fine.
 YOUTUBE_URL_RE = re.compile(
-    r"https?://(?:(?:www|m)\.)?youtube\.com/(?:watch\?v=|shorts/|embed/)[\w-]+\S*"
+    r"https?://(?:(?:www|m|music)\.)?youtube\.com/(?:watch\?v=|shorts/|embed/|live/|clip/)[\w-]+\S*"
+    r"|https?://(?:www\.)?youtube-nocookie\.com/embed/[\w-]+\S*"
     r"|https?://youtu\.be/[\w-]+\S*",
     re.IGNORECASE,
 )
@@ -441,10 +442,12 @@ def extract_youtube_urls(text):
 def _is_youtube_link_message(message):
     return bool(message.text) and bool(YOUTUBE_URL_RE.search(message.text))
 
-# Remembers which extraction mode (with/without cookies) last succeeded, so
-# a request that hits YouTube's anti-bot gate doesn't pay the failing
-# attempt's latency on every single link.
-_yt_last_good_mode = {"use_cookies": None}
+# Remembers which extraction mode (with/without cookies) and player client
+# last succeeded, so a request that hits YouTube's anti-bot gate doesn't pay
+# the failing attempts' latency on every single link. The android player
+# client doesn't face the web client's JS-challenge/sign-in gate, so once it
+# proves working it becomes the first attempt until the web path recovers.
+_yt_last_good_mode = {"use_cookies": None, "player_client": "default"}
 
 def _youtube_gate_error(exc):
     """True if `exc` looks like one of YouTube's anti-bot/stale-session gates
@@ -465,18 +468,23 @@ def _youtube_gate_error(exc):
         )
     )
 
-def _youtube_base_ydl_opts(use_cookies=True):
+def _youtube_base_ydl_opts(use_cookies=True, player_client="default"):
     """Base yt-dlp options shared by every YouTube extraction/download call.
     Cookies are attached only when requested AND the file actually exists —
     a stale/flagged cookie jar served from a datacenter IP actively triggers
     YouTube's reload/bot gate, so callers fall back to anonymous requests
-    when the cookie'd attempt fails that way (see _youtube_gate_error)."""
+    when the cookie'd attempt failed that way (see _youtube_gate_error).
+    player_client selects the YouTube player API client: "default" is the
+    web client; "android" bypasses the web client's JS-challenge/sign-in
+    gate (at most ~1080p, which already covers this bot's ceiling)."""
     opts = {
         "quiet": True, "no_warnings": True, "socket_timeout": 30, "retries": 2,
         "js_runtimes": {"deno": {}},  # EJS challenge solving — required since yt-dlp 2026.x
     }
     if use_cookies and YOUTUBE_COOKIES_FILE and os.path.isfile(YOUTUBE_COOKIES_FILE):
         opts["cookiefile"] = YOUTUBE_COOKIES_FILE
+    if player_client != "default":
+        opts["extractor_args"] = {"youtube": {"player_client": [player_client]}}
     return opts
 
 def _extract_youtube_qualities(url):
@@ -493,19 +501,23 @@ def _extract_youtube_qualities(url):
     the best video-only + best audio-only streams get merged into one file
     at download time via yt-dlp's own ffmpeg-backed merger.
 
-    Returns (title, options_dict) — options_dict maps a short key ("v360",
+    Returns (title, options, reason) — options_dict maps a short key ("v360",
     "v1080", "audio") to {"height", "is_audio", "label", "filesize",
-    "needs_merge"}. Returns (None, None) on any failure. No raw URLs are
-    stored here — download time re-resolves via a fresh yt-dlp call using a
-    format-selector string, since extraction-time URLs can be short-lived
-    and HD extraction/download takes longer."""
+    "needs_merge"}. Returns (None, None, reason) on failure, where reason is
+    "gate" (YouTube demanded sign-in on every path — operational: refresh
+    cookies / check IP standing) or "unavailable" (private/deleted/etc.).
+    No raw URLs are stored here — download time re-resolves via a fresh
+    yt-dlp call using a format-selector string, since extraction-time URLs
+    can be short-lived and HD extraction/download takes longer."""
     ffmpeg_path = _ffmpeg_location()
 
-    # Attempt order: last-known-good mode first; otherwise cookies first
+    # Attempt order: last-known-good combo first; otherwise cookies first
     # (fresh cookies unlock age-gated/HD content) with an anonymous retry —
     # a stale cookie jar replayed from a datacenter IP is exactly what
     # triggers YouTube's "The page needs to be reloaded" / "Sign in to
     # confirm you're not a bot" gate, and a cookie-less attempt gets past it.
+    # If every web-client attempt hits the gate, one last attempt goes out
+    # over the android player client, which doesn't face the web gate.
     if _yt_last_good_mode["use_cookies"] is not None:
         first = _yt_last_good_mode["use_cookies"]
         modes = [first]
@@ -518,14 +530,22 @@ def _extract_youtube_qualities(url):
     else:
         modes = [False]
 
+    remembered_client = _yt_last_good_mode.get("player_client", "default")
+    attempts = []
+    for i, use_cookies in enumerate(modes):
+        attempts.append((use_cookies, remembered_client if i == 0 else "default"))
+
     info = None
     last_exc = None
-    for use_cookies in modes:
-        mode_name = "cookies" if use_cookies else "anonymous"
+    for use_cookies, player_client in attempts:
+        mode_name = ("cookies" if use_cookies else "anonymous") + (
+            f"+{player_client}" if player_client != "default" else "")
         try:
-            with yt_dlp.YoutubeDL(_youtube_base_ydl_opts(use_cookies=use_cookies)) as ydl:
+            with yt_dlp.YoutubeDL(_youtube_base_ydl_opts(use_cookies=use_cookies,
+                                                          player_client=player_client)) as ydl:
                 info = ydl.extract_info(url, download=False)
             _yt_last_good_mode["use_cookies"] = use_cookies
+            _yt_last_good_mode["player_client"] = player_client
             log.info("YouTube extraction OK for %s (mode=%s)", url, mode_name)
             break
         except Exception as e:
@@ -535,10 +555,25 @@ def _extract_youtube_qualities(url):
                 break  # ordinary failure (private/deleted video etc.) — switching modes won't help
             if use_cookies:
                 log.info("YouTube anti-bot gate hit with cookies — retrying anonymously for %s", url)
+    if not info and last_exc is not None and _youtube_gate_error(last_exc) and all(
+            c != "android" for _, c in attempts):
+        # Web player clients are all gated from here — last resort: the
+        # android player client, which doesn't face the web sign-in gate.
+        try:
+            with yt_dlp.YoutubeDL(_youtube_base_ydl_opts(use_cookies=False,
+                                                          player_client="android")) as ydl:
+                info = ydl.extract_info(url, download=False)
+            _yt_last_good_mode["use_cookies"] = False
+            _yt_last_good_mode["player_client"] = "android"
+            log.info("YouTube extraction OK for %s (mode=anonymous+android fallback)", url)
+        except Exception as e:
+            last_exc = e
+            log.warning("YouTube extraction failed for %s (mode=anonymous+android): %s", url, str(e)[:200])
     if not info:
         if last_exc is not None:
             log.warning("YouTube extraction failed for %s (all modes)", url, exc_info=last_exc)
-        return None, None
+        reason = "gate" if last_exc is not None and _youtube_gate_error(last_exc) else "unavailable"
+        return None, None, reason
 
     title = (info.get("title") or "").strip()
     all_formats = info.get("formats") or []
@@ -590,7 +625,7 @@ def _extract_youtube_qualities(url):
                 "filesize": best_audio_size or None, "needs_merge": False,
             }
 
-    return title, options
+    return title, options, None
 
 def _download_youtube_quality(url, opt, dest_dir):
     """Download (and merge via ffmpeg if needed) the chosen quality using
@@ -652,18 +687,31 @@ def _download_youtube_quality(url, opt, dest_dir):
         cookie_modes = [preferred, not preferred] if preferred is not None else [True, False]
         cookie_modes = cookie_modes if cookies_usable else [False]
 
+        # Try the last-known-good (cookies, player-client) combo first, then
+        # the standard fallbacks — at most one extra attempt, and usually the
+        # first one succeeds since extraction just proved the combo.
+        remembered_client = _yt_last_good_mode.get("player_client", "default")
+        pairs = []
+        if preferred is not None:
+            pairs.append((preferred, remembered_client))
+        for c in cookie_modes:
+            if (c, "default") not in pairs:
+                pairs.append((c, "default"))
+
         next_selector = False  # generic failures skip remaining variants entirely (original behaviour)
 
-        for use_cookies in cookie_modes:
+        for use_cookies, player_client in pairs:
             if next_selector:
                 break
-            mode_name = "cookies" if use_cookies else "anonymous"
+            mode_name = ("cookies" if use_cookies else "anonymous") + (
+                f"+{player_client}" if player_client != "default" else "")
             # Telegram-friendliest container first; fall back to mkv only if
             # ffmpeg's mp4 muxing actually fails (it accepts any codecs).
             merge_exts = ["mp4", "matroska"] if not opt["is_audio"] else [None]
 
             for merge_ext in merge_exts:
-                ydl_opts = _youtube_base_ydl_opts(use_cookies=use_cookies)
+                ydl_opts = _youtube_base_ydl_opts(use_cookies=use_cookies,
+                                                  player_client=player_client)
                 ydl_opts["format"] = fmt
                 ydl_opts["outtmpl"] = outtmpl
                 if merge_ext:
@@ -678,10 +726,14 @@ def _download_youtube_quality(url, opt, dest_dir):
                         info = ydl.extract_info(url, download=True)
                     requested = (info.get("requested_downloads") or [None])[0] if info else None
                     if requested and requested.get("filepath") and os.path.isfile(requested["filepath"]):
+                        _yt_last_good_mode["use_cookies"] = use_cookies
+                        _yt_last_good_mode["player_client"] = player_client
                         return requested["filepath"]
                     for fn in os.listdir(dest_dir):
                         fp = os.path.join(dest_dir, fn)
                         if os.path.isfile(fp):
+                            _yt_last_good_mode["use_cookies"] = use_cookies
+                            _yt_last_good_mode["player_client"] = player_client
                             return fp
                     next_selector = True  # yt-dlp succeeded but no file appeared — no variant will change that
                     break

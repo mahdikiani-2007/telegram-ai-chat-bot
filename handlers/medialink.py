@@ -152,11 +152,16 @@ def handle_youtube_link(message):
         bot.send_chat_action(message.chat.id, "typing")
         status = _safe_reply_to(bot, message, "⏳ در حال بررسی کیفیت‌های موجود...")
 
-        title, options = _extract_youtube_qualities(url)
+        title, options, reason = _extract_youtube_qualities(url)
         if not options:
+            if reason == "gate":
+                fail_text = ("❌ یوتیوب جلوی دانلود رو گرفته و ورود می‌خواد (محدودیت آی‌پی یا نشست منقضی‌شده). "
+                             "اگه ادامه داشت به ادمین بگو.")
+            else:
+                fail_text = "❌ نتونستم این ویدیو رو بررسی کنم. ممکنه حذف‌شده، سنی‌محدود، یا خصوصی باشه."
             try:
                 bot.edit_message_text(
-                    "❌ نتونستم این ویدیو رو بررسی کنم. ممکنه حذف‌شده، سنی‌محدود، یا خصوصی باشه.",
+                    fail_text,
                     chat_id=message.chat.id, message_id=status.message_id,
                 )
             except Exception:
