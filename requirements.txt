@@ -1,0 +1,9 @@
+# Pinned exact versions (verified 2026-10-01: import + smoke suite green).
+# Reproducible deploys: a redeploy must build the same bits. Bump one at a
+# time and re-run pytest before deploying.
+pyTelegramBotAPI==4.36.0
+requests==2.34.2
+urllib3==2.2.3
+yt-dlp==2026.8.19
+imageio-ffmpeg==0.6.0
+instagrapi==3.0.16
