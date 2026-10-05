@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import threading
 import time
 import traceback
 
@@ -120,12 +121,16 @@ def build_backup_archive(dest_dir):
     os.remove(raw_path)
     return gz_path, os.path.getsize(gz_path)
 
-def send_daily_backup():
-    """Build the snapshot, rotate local copies, and send the newest to the
+def send_daily_backup(admin_id=None):
+    """Build the snapshot, rotate local copies, and send the newest to an
     admin's DM. Best-effort and heavily guarded — a backup problem must
-    never take the bot down."""
-    if not ADMIN_ID:
-        log.info("Daily backup skipped: ADMIN_ID not set.")
+    never take the bot down. `admin_id` targets the send (Stage 3B run-now
+    sends to the requesting owner); None keeps the legacy ADMIN_ID target.
+    NOTE: no retention purge or VACUUM here — those live in
+    _run_daily_maintenance, which only the scheduled run calls."""
+    target = admin_id or ADMIN_ID
+    if not target:
+        log.info("Daily backup skipped: no admin target.")
         return False
     try:
         path, size = build_backup_archive(_backup_dir())
@@ -138,7 +143,7 @@ def send_daily_backup():
     try:
         with open(path, "rb") as fh:
             bot.send_document(
-                ADMIN_ID, fh,
+                target, fh,
                 visible_file_name=os.path.basename(path),
                 caption=(
                     f"💾 بکاپ روزانه دیتابیس — {iran_now().strftime('%Y-%m-%d %H:%M')} "
@@ -146,13 +151,39 @@ def send_daily_backup():
                     f"حجم فشرده: {size / 1024:.0f} KB"
                 ),
             )
-        METRICS["backups_sent"] += 1
+        METRICS["backups_sent"] = METRICS.get("backups_sent", 0) + 1
         log.info("Daily DB backup sent to admin (%.0f KB).", size / 1024)
         return True
     except Exception:
         log.error("Daily backup: send to admin failed", exc_info=True)
         admin_notifier.notify("backup_send_failed", traceback.format_exc(limit=5))
         return False
+
+
+# Single-flight with the scheduled run: a double tap or an overlap never
+# runs two backups at once (run-now takes it non-blocking and refuses).
+_backup_lock = threading.Lock()
+
+
+def run_backup_now(admin_id):
+    """Owner run-now entry: snapshot + send ONLY (never purge/VACUUM).
+    Synchronous — the panel runs it on a background thread. Returns
+    (ok, message)."""
+    from services.panel_jobs import job_mark_error, job_mark_start, job_mark_success
+
+    if not _backup_lock.acquire(blocking=False):
+        return False, "a backup is already running"
+    job_mark_start("backup")
+    try:
+        ok = send_daily_backup(admin_id)
+        if ok:
+            job_mark_success("backup")
+        return ok, ("backup sent" if ok else "backup failed — see logs")
+    except Exception:
+        job_mark_error("backup", traceback.format_exc(limit=3))
+        return False, "backup crashed — see logs"
+    finally:
+        _backup_lock.release()
 
 def _backup_scheduler_loop():
     """Backup counterpart of the digest loop: sleep until 04:00 Iran time,
@@ -162,9 +193,27 @@ def _backup_scheduler_loop():
         sleep_for = max(1.0, iran_next_backup_epoch() - time.time())
         time.sleep(sleep_for)
         try:
-            _run_daily_maintenance()
-            send_daily_backup()
+            from services.panel_jobs import (
+                job_mark_error,
+                job_mark_start,
+                job_mark_success,
+                job_paused_until,
+            )
+
+            job_mark_start("backup")
+            paused, _label = job_paused_until("backup")
+            while paused:
+                time.sleep(60)
+                paused, _label = job_paused_until("backup")
+            with _backup_lock:
+                _run_daily_maintenance()
+                send_daily_backup()
+            job_mark_success("backup")
         except Exception:
             log.error("Scheduled backup failed", exc_info=True)
+            try:
+                job_mark_error("backup", traceback.format_exc(limit=3))
+            except Exception:
+                pass
             admin_notifier.notify("backup_scheduler_error", traceback.format_exc(limit=5))
         time.sleep(60)  # small buffer so a fast loop can't double-fire

@@ -94,7 +94,59 @@ BACKUP_HOUR_IRAN = int(os.environ.get("BACKUP_HOUR_IRAN", "4"))
 # =========================
 # Admin Configuration
 # =========================
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))  # Telegram user ID of the bot administrator
+_log = logging.getLogger("L-bot")
+
+try:
+    ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))  # legacy single admin; kept exported so existing imports keep working
+except (TypeError, ValueError):
+    _log.warning("ADMIN_ID: ignoring invalid value %r (must be a positive integer).", os.environ.get("ADMIN_ID"))
+    ADMIN_ID = 0
+if ADMIN_ID < 0:
+    _log.warning("ADMIN_ID: ignoring invalid value %r (must be a positive integer).", ADMIN_ID)
+    ADMIN_ID = 0
+
+
+def _parse_admin_ids(raw):
+    """Parse comma-separated admin IDs. Only positive ints survive; anything
+    else is ignored with a warning (fail closed: a typo must never morph
+    into admin rights for id 0 or a stranger)."""
+    ids = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except (TypeError, ValueError):
+            _log.warning("ADMIN_IDS: ignoring invalid entry %r (not an integer).", part)
+            continue
+        if value <= 0:
+            _log.warning("ADMIN_IDS: ignoring invalid entry %r (must be a positive integer).", part)
+            continue
+        if value not in ids:
+            ids.append(value)
+    return ids
+
+
+ADMIN_IDS = tuple(_parse_admin_ids(os.environ.get("ADMIN_IDS", "")))
+
+# Owner = first ID in ADMIN_IDS if set, else legacy ADMIN_ID. On conflict
+# ADMIN_IDS[0] wins (warned, since two sources disagreeing is a config bug).
+if ADMIN_IDS:
+    OWNER_ID = ADMIN_IDS[0]
+    if ADMIN_ID and ADMIN_ID != OWNER_ID:
+        _log.warning(
+            "ADMIN_ID (%d) differs from ADMIN_IDS[0] (%d) — ADMIN_IDS[0] wins as owner.",
+            ADMIN_ID, OWNER_ID,
+        )
+elif ADMIN_ID > 0:
+    OWNER_ID = ADMIN_ID
+    ADMIN_IDS = (ADMIN_ID,)
+else:
+    OWNER_ID = 0
+
+if not OWNER_ID:
+    _log.warning("No owner configured (set ADMIN_IDS or ADMIN_ID) — the admin panel is disabled.")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("TELEGRAM_TOKEN not found")

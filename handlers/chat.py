@@ -22,6 +22,7 @@ from handlers.shared import (
 from infra import HTTP
 from limits import rate_limiter, spam_tracker
 from metrics import METRICS
+from services import panel_settings as ps
 from services.debate import (
     extract_debate_topic,
     is_debate_active,
@@ -140,8 +141,14 @@ def handle_all_messages(message):
         identity = get_bot_identity()
         bot_username = identity["username"] or ""
         raw_text = extract_text_from_message(message)
+        turn_born = time.time()  # resurrection guard: post-reset saves are dropped
 
         if message.content_type == "text" and raw_text and is_debate_trigger(raw_text):
+            # Ambient trigger: silent in groups when disabled, rate-limited
+            # notice in private; admins exempt. No fall-through (handled).
+            if not ps.feature_gate_message(bot, message, "debate", explicit=False,
+                                           chat_id=str(message.chat.id)):
+                return
             topic = extract_debate_topic(raw_text)
             if topic:
                 start_debate(message, topic)
@@ -187,6 +194,10 @@ def handle_all_messages(message):
             return
         if action == "warn":
             _safe_reply_to(bot, message, "رفتار تو تمرکز من را به هم میزند، ۱ دقیقه سکوت کن.")
+            return
+
+        if not ps.feature_gate_message(bot, message, "chat", explicit=False,
+                                       chat_id=str(message.chat.id)):
             return
 
         category = "vision" if message.content_type == "photo" else "chat"
@@ -252,8 +263,8 @@ def handle_all_messages(message):
                 _safe_reply_to(bot, message, "⚠️ خطا در دریافت تصویر. لطفاً دوباره تلاش کنید.")
                 return
 
-        repo.save_message(memory_id, "user", tagged_user_text)
-        user_message_saved = True
+        user_message_saved = ps.save_memory_guarded(
+            memory_id, "user", tagged_user_text, message.from_user.id, turn_born)
 
         bot.send_chat_action(message.chat.id, "typing")
         placeholder = _safe_reply_to(bot, message, "در حال پردازش...")
@@ -329,7 +340,7 @@ def handle_all_messages(message):
 
         finalize_message(message, placeholder.message_id, full_text, msg_ids)
 
-        repo.save_message(memory_id, "assistant", full_text)
+        ps.save_memory_guarded(memory_id, "assistant", full_text, message.from_user.id, turn_born)
 
         maybe_summarize(memory_id)
 
@@ -427,6 +438,7 @@ if bot_light:
 
         try:
             chat_id_str = str(message.chat.id)
+            turn_born = time.time()  # resurrection guard: post-reset saves are dropped
 
             if is_debate_active(chat_id_str):
                 return
@@ -463,6 +475,10 @@ if bot_light:
                 _safe_reply_to(bot_light, message, "صبرت رو از دست نده. ۱ دقیقه سکوت کن.")
                 return
 
+            if not ps.feature_gate_message(bot_light, message, "chat", explicit=False,
+                                           chat_id=str(message.chat.id)):
+                return
+
             allowed, scope = rate_limiter.allow("chat", message.from_user.id)
             if not allowed:
                 METRICS["ratelimited"] += 1
@@ -476,8 +492,8 @@ if bot_light:
             user_first_name = message.from_user.first_name or "کاربر"
             tagged_user_text = f"[{user_first_name}]: {raw_text}"
 
-            repo.save_message(memory_id, "user", tagged_user_text)
-            user_message_saved = True
+            user_message_saved = ps.save_memory_guarded(
+                memory_id, "user", tagged_user_text, message.from_user.id, turn_born)
 
             bot_light.send_chat_action(message.chat.id, "typing")
             placeholder = _safe_reply_to(bot_light, message, "در حال پردازش...")
@@ -538,7 +554,7 @@ if bot_light:
                 full_text = "داده‌ای برای پاسخ یافت نشد."
 
             finalize_message_generic(bot_light, message, placeholder.message_id, full_text, msg_ids)
-            repo.save_message(memory_id, "assistant", full_text)
+            ps.save_memory_guarded(memory_id, "assistant", full_text, message.from_user.id, turn_born)
             maybe_summarize(memory_id)
             METRICS["handled"] += 1
 

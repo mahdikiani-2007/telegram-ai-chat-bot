@@ -56,6 +56,18 @@ class TTLSessionStore:
         with self._lock:
             self._data.pop(key, None)
 
+    def discard_where(self, key_pred=None, value_pred=None):
+        """Remove every entry whose key (and/or value payload) matches.
+        Stage 2C user reset. Never raises."""
+        try:
+            with self._lock:
+                for k, (v, _exp) in list(self._data.items()):
+                    if ((key_pred is not None and key_pred(k))
+                            or (value_pred is not None and value_pred(v))):
+                        self._data.pop(k, None)
+        except Exception:
+            log.warning("discard_where failed", exc_info=True)
+
     def sweep(self):
         now = time.time()
         with self._lock:
@@ -88,8 +100,16 @@ _remind_sessions = TTLSessionStore(SESSION_TTL_SECONDS)            # -> {text, a
 _remind_pending_mention = TTLSessionStore(SESSION_TTL_SECONDS)     # -> {..., trigger_time}
 _remind_pending_recurrence = TTLSessionStore(SESSION_TTL_SECONDS)  # -> {..., mention_type}
 
-# Admin broadcast wizard session store
-_admin_broadcast_sessions = TTLSessionStore(SESSION_TTL_SECONDS)  # user_id -> {stage, target_chat_id?}
+# Admin panel text-input sessions (typed IDs, searches, settings, broadcast)
+_panel_input_sessions = TTLSessionStore(SESSION_TTL_SECONDS)  # user_id -> {state, ...}
+
+PANEL_ADD_ADMIN = "PANEL_ADD_ADMIN"
+PANEL_USER_SEARCH = "PANEL_USER_SEARCH"
+PANEL_GROUP_SEARCH = "PANEL_GROUP_SEARCH"
+PANEL_SETTING_VALUE = "PANEL_SETTING_VALUE"
+PANEL_LIMIT_ADD = "PANEL_LIMIT_ADD"
+PANEL_BROADCAST_CHAT = "PANEL_BROADCAST_CHAT"
+PANEL_BROADCAST_CONTENT = "PANEL_BROADCAST_CONTENT"
 
 _ALL_SESSION_STORES = [
     _waiting_text_input,
@@ -100,7 +120,7 @@ _ALL_SESSION_STORES = [
     _remind_sessions,
     _remind_pending_mention,
     _remind_pending_recurrence,
-    _admin_broadcast_sessions,
+    _panel_input_sessions,
 ]
 
 # Defined later in the module (YouTube section) but swept by the same GC
@@ -111,6 +131,31 @@ _ALL_SESSION_STORES_LATE = []
 
 def _register_late_session_store(store):
     _ALL_SESSION_STORES_LATE.append(store)
+
+
+def clear_user_state(user_id):
+    """Drop all wizard/session entries keyed by this user, across every TTL
+    store (todo/remind/waiting-input/admin-broadcast/panel). Keys are either
+    the bare uid or (chat_id_str, uid) tuples — matched exactly, never by
+    substring. Stage 2C user reset. Never raises."""
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return
+
+    def _mine(key):
+        if key == uid:
+            return True
+        return isinstance(key, tuple) and uid in key
+
+    for store in list(_ALL_SESSION_STORES) + list(_ALL_SESSION_STORES_LATE):
+        try:
+            # Opaque token-keyed stores (e.g. the YT picker in
+            # services/media.py) never match _mine; they are cleared via
+            # their own module function.
+            store.discard_where(key_pred=_mine)
+        except Exception:
+            log.warning("clear_user_state failed for a store", exc_info=True)
 
 
 def _session_gc_loop():

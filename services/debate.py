@@ -165,6 +165,26 @@ def _generate_with_timeout(prompt_messages, timeout_sec=None):
             time.sleep(2)
     return ""
 
+def _debate_delay():
+    """Panel-overrideable turn delay (Stage 2B)."""
+    try:
+        from services.panel_settings import setting_value
+
+        return setting_value("debate.delay_sec")
+    except Exception:
+        return DEBATE_DELAY
+
+
+def _debate_max_rounds():
+    """Panel-overrideable round cap (Stage 2B)."""
+    try:
+        from services.panel_settings import setting_value
+
+        return setting_value("debate.max_rounds")
+    except Exception:
+        return MAX_DEBATE_ROUNDS
+
+
 def _debate_loop(chat_id_str, telegram_chat_id, topic, l_opening, l_opening_msg_id=None,
                  user_message_id=None):
     """Background debate loop between L and Light.
@@ -227,14 +247,14 @@ def _debate_loop(chat_id_str, telegram_chat_id, topic, l_opening, l_opening_msg_
     first_reply_target = l_opening_msg_id or user_message_id
 
     try:
-        for round_num in range(1, MAX_DEBATE_ROUNDS + 1):
+        for round_num in range(1, _debate_max_rounds() + 1):
             with _debate_lock:
                 entry = _active_debates.get(chat_id_str)
                 if not entry or not entry["active"]:
                     break
                 entry["round"] = round_num
 
-            time.sleep(DEBATE_DELAY)
+            time.sleep(_debate_delay())
 
             try:
                 light_text = _generate_with_timeout(light_history)
@@ -273,7 +293,7 @@ def _debate_loop(chat_id_str, telegram_chat_id, topic, l_opening, l_opening_msg_
                 if not entry or not entry["active"]:
                     break
 
-            time.sleep(DEBATE_DELAY)
+            time.sleep(_debate_delay())
 
             try:
                 l_text = _generate_with_timeout(l_history)

@@ -251,6 +251,78 @@ class ChatRepository:
                 CREATE INDEX IF NOT EXISTS idx_chat_log_chat_ts
                 ON chat_log(chat_id, ts)
             """)
+            # ---- Admin control panel (Stage 1): runtime settings, DB-managed
+            # admins, app-level bans, audit trail. Same self-migrating
+            # convention as the rest of _init — CREATE TABLE IF NOT EXISTS,
+            # so existing volumes gain these on next boot with no downtime.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS panel_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS panel_admins (
+                    user_id INTEGER PRIMARY KEY,
+                    added_by INTEGER NOT NULL,
+                    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS panel_bans (
+                    user_id INTEGER PRIMARY KEY,
+                    reason TEXT NOT NULL DEFAULT '',
+                    banned_by INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS panel_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    target TEXT NOT NULL DEFAULT '',
+                    result TEXT NOT NULL DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chat_log_chat_ts
+                ON chat_log(chat_id, ts)
+            """)
+            # ---- Stage 2C: per-creator indexes for reset scoping ----
+            for _idx_ddl in (
+                "CREATE INDEX IF NOT EXISTS idx_todos_creator ON todos(creator_id)",
+                "CREATE INDEX IF NOT EXISTS idx_todos_assignee ON todos(assignee_id)",
+                "CREATE INDEX IF NOT EXISTS idx_reminders_creator ON reminders(creator_id)",
+                "CREATE INDEX IF NOT EXISTS idx_reminders_assignee ON reminders(assignee_id)",
+            ):
+                try:
+                    conn.execute(_idx_ddl)
+                except Exception:
+                    pass
+            # ---- Stage 3A: broadcast runs (progress counters only — message
+            # content is NEVER logged or stored here).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS panel_broadcasts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER NOT NULL,
+                    target TEXT NOT NULL DEFAULT '',
+                    content_type TEXT NOT NULL DEFAULT '',
+                    total INTEGER NOT NULL DEFAULT 0,
+                    sent INTEGER NOT NULL DEFAULT 0,
+                    unreachable INTEGER NOT NULL DEFAULT 0,
+                    failed INTEGER NOT NULL DEFAULT 0,
+                    skipped_banned INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    finished_at DATETIME
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_panel_broadcasts_status
+                ON panel_broadcasts(status)
+            """)
             conn.commit()
 
     # ---- writes ----
@@ -447,21 +519,34 @@ class ChatRepository:
             conn.commit()
             return cur.rowcount
 
-    def claim_due_todos(self, now_epoch, token, stale_seconds=300):
+    def claim_due_todos(self, now_epoch, token, stale_seconds=300, exclude_banned=True):
         """Atomically claim due active todos for this dispatch batch.
         Returns [(id, deadline)] owned by `token`; concurrent batches and
-        fresh claims are excluded, stale ones (>stale_seconds) refire."""
+        fresh claims are excluded, stale ones (>stale_seconds) refire.
+        Banned creators are excluded via a NOT IN subquery (never a bound
+        list — a large ban table can't break the query or stall dispatch),
+        but ONLY for their own private chat (chat_id = creator): rows they
+        created in groups keep firing to the group. Unclaimed rows sit
+        untouched (no retry spin, no attempts, no alerts) and deliver after
+        unban since they stay due."""
         now = float(now_epoch)
+        ban_filter = (
+            "AND NOT (chat_id = CAST(creator_id AS TEXT) "
+            "AND creator_id IN (SELECT user_id FROM panel_bans))"
+            if exclude_banned else ""
+        )
         with self._write_lock:
             conn = self._connect()
             conn.execute(
                 "UPDATE todos SET claimed_at = ?, claim_token = ? "
                 "WHERE status = 0 AND deadline IS NOT NULL AND deadline <= ? "
-                "AND (claimed_at IS NULL OR claimed_at < ?)",
+                "AND (claimed_at IS NULL OR claimed_at < ?) "
+                f"{ban_filter}",
                 (now, str(token), now, now - int(stale_seconds)),
             )
             rows = conn.execute(
-                "SELECT id, deadline FROM todos WHERE claim_token = ?",
+                "SELECT id, deadline FROM todos WHERE claim_token = ? "
+                "ORDER BY deadline ASC",
                 (str(token),),
             ).fetchall()
             conn.commit()
@@ -568,21 +653,30 @@ class ChatRepository:
             conn.commit()
             return cur.rowcount
 
-    def claim_due_reminders(self, now_epoch, token, stale_seconds=300):
+    def claim_due_reminders(self, now_epoch, token, stale_seconds=300, exclude_banned=True):
         """Atomically claim due pending reminders for this dispatch batch.
         Returns [(id, trigger_time)] owned by `token`; concurrent batches
-        and fresh claims are excluded, stale ones (>stale_seconds) refire."""
+        and fresh claims are excluded, stale ones (>stale_seconds) refire.
+        Banned creators excluded via subquery, private-chat scope only —
+        see claim_due_todos."""
         now = float(now_epoch)
+        ban_filter = (
+            "AND NOT (chat_id = CAST(creator_id AS TEXT) "
+            "AND creator_id IN (SELECT user_id FROM panel_bans))"
+            if exclude_banned else ""
+        )
         with self._write_lock:
             conn = self._connect()
             conn.execute(
                 "UPDATE reminders SET claimed_at = ?, claim_token = ? "
                 "WHERE status = 0 AND trigger_time <= ? "
-                "AND (claimed_at IS NULL OR claimed_at < ?)",
+                "AND (claimed_at IS NULL OR claimed_at < ?) "
+                f"{ban_filter}",
                 (now, str(token), now, now - int(stale_seconds)),
             )
             rows = conn.execute(
-                "SELECT id, trigger_time FROM reminders WHERE claim_token = ?",
+                "SELECT id, trigger_time FROM reminders WHERE claim_token = ? "
+                "ORDER BY trigger_time ASC",
                 (str(token),),
             ).fetchall()
             conn.commit()
@@ -694,6 +788,155 @@ class ChatRepository:
             (str(chat_id), username),
         ).fetchone()
         return row[0] if row else None
+
+    # =========================
+    # Admin panel: paged lists, counts, search (Stage 2A)
+    # =========================
+    @staticmethod
+    def _escape_like(text):
+        """Escape a user-supplied fragment for a LIKE ... ESCAPE '\' clause."""
+        return str(text).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def count_known_chats(self, types_):
+        conn = self._connect()
+        qmarks = ",".join("?" * len(types_))
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM known_chats WHERE type IN ({qmarks})", tuple(types_)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def list_known_chats_paged(self, types_, limit=10, offset=0):
+        """(chat_id, type, username, title, last_seen), most recent first."""
+        conn = self._connect()
+        qmarks = ",".join("?" * len(types_))
+        return conn.execute(
+            f"""SELECT chat_id, type, COALESCE(username, ''), COALESCE(title, ''), last_seen
+                FROM known_chats WHERE type IN ({qmarks})
+                ORDER BY last_seen DESC LIMIT ? OFFSET ?""",
+            tuple(types_) + (max(1, int(limit)), max(0, int(offset))),
+        ).fetchall()
+
+    def get_known_chat(self, chat_id):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT chat_id, type, username, title, last_seen FROM known_chats WHERE chat_id = ?",
+            (str(chat_id),),
+        ).fetchone()
+
+    def search_known_chats(self, query, limit=10):
+        """Exact chat_id / exact username first, then escaped substring on
+        username/title. The admin always picks from rendered rows — the bot
+        never acts on a first match. Returns
+        (chat_id, type, username, title, last_seen)."""
+        q = str(query or "").strip().lstrip("@")[:64]
+        if not q:
+            return []
+        conn = self._connect()
+        out, seen = [], set()
+
+        def _add(rows):
+            for r in rows:
+                if r[0] not in seen:
+                    seen.add(r[0])
+                    out.append(r)
+
+        if q.lstrip("-").isdigit():
+            _add(conn.execute(
+                "SELECT chat_id, type, COALESCE(username, ''), COALESCE(title, ''), last_seen"
+                " FROM known_chats WHERE chat_id = ?",
+                (q,),
+            ).fetchall())
+        _add(conn.execute(
+            """SELECT chat_id, type, COALESCE(username, ''), COALESCE(title, ''), last_seen
+               FROM known_chats WHERE username = ? COLLATE NOCASE""",
+            (q,),
+        ).fetchall())
+        like = f"%{self._escape_like(q)}%"
+        _add(conn.execute(
+            """SELECT chat_id, type, COALESCE(username, ''), COALESCE(title, ''), last_seen
+               FROM known_chats
+               WHERE username LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
+               ORDER BY last_seen DESC""",
+            (like, like),
+        ).fetchall())
+        return out[: max(1, int(limit))]
+
+    def list_group_members_paged(self, chat_id, limit=10, offset=0):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT user_id, username, first_name, last_seen FROM group_members "
+            "WHERE chat_id = ? ORDER BY last_seen DESC LIMIT ? OFFSET ?",
+            (str(chat_id), max(1, int(limit)), max(0, int(offset))),
+        ).fetchall()
+
+    def count_group_members(self, chat_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM group_members WHERE chat_id = ?", (str(chat_id),)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def search_group_members(self, query, limit=10):
+        """Find observed users by numeric id or @username (exact NOCASE
+        first, escaped substring after). Returns
+        (chat_id, user_id, username, first_name, last_seen)."""
+        q = str(query or "").strip().lstrip("@")[:64]
+        if not q:
+            return []
+        conn = self._connect()
+        out, seen = [], set()
+
+        def _add(rows):
+            for r in rows:
+                key = (r[0], r[1])
+                if key not in seen:
+                    seen.add(key)
+                    out.append(r)
+
+        if q.lstrip("-").isdigit():
+            _add(conn.execute(
+                "SELECT chat_id, user_id, username, first_name, last_seen "
+                "FROM group_members WHERE user_id = ?",
+                (int(q),),
+            ).fetchall())
+        _add(conn.execute(
+            "SELECT chat_id, user_id, username, first_name, last_seen "
+            "FROM group_members WHERE username = ? COLLATE NOCASE",
+            (q,),
+        ).fetchall())
+        like = f"%{self._escape_like(q)}%"
+        _add(conn.execute(
+            "SELECT chat_id, user_id, username, first_name, last_seen "
+            "FROM group_members WHERE username LIKE ? ESCAPE '\\' "
+            "OR first_name LIKE ? ESCAPE '\\' ORDER BY last_seen DESC",
+            (like, like),
+        ).fetchall())
+        return out[: max(1, int(limit))]
+
+    def count_user_facts(self, user_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM user_facts WHERE user_id = ?", (int(user_id),)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def count_todos_by_creator(self, user_id, active_only=True):
+        conn = self._connect()
+        q = "SELECT COUNT(*) FROM todos WHERE creator_id = ?"
+        params = [int(user_id)]
+        if active_only:
+            q += " AND status = 0"
+        row = conn.execute(q, params).fetchone()
+        return row[0] if row else 0
+
+    def count_reminders_by_creator(self, user_id, active_only=True):
+        conn = self._connect()
+        q = "SELECT COUNT(*) FROM reminders WHERE creator_id = ?"
+        params = [int(user_id)]
+        if active_only:
+            q += " AND status = 0"
+        row = conn.execute(q, params).fetchone()
+        return row[0] if row else 0
 
     # =========================
     # Per-user sessions (private chats)
@@ -1020,6 +1263,292 @@ class ChatRepository:
                 (str(key), str(value)),
             )
             conn.commit()
+
+    # =========================
+    # Admin control panel: settings / admins / bans / audit
+    # =========================
+    def get_panel_setting(self, key, default=None):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT value FROM panel_settings WHERE key = ?", (str(key),)
+        ).fetchone()
+        return row[0] if row else default
+
+    def set_panel_setting(self, key, value):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO panel_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(key), str(value)),
+            )
+            conn.commit()
+
+    def delete_panel_setting(self, key):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("DELETE FROM panel_settings WHERE key = ?", (str(key),))
+            conn.commit()
+
+    def add_panel_admin(self, user_id, added_by):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT OR IGNORE INTO panel_admins (user_id, added_by) VALUES (?, ?)",
+                (int(user_id), int(added_by)),
+            )
+            conn.commit()
+
+    def remove_panel_admin(self, user_id):
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM panel_admins WHERE user_id = ?", (int(user_id),)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def is_panel_admin(self, user_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT 1 FROM panel_admins WHERE user_id = ?", (int(user_id),)
+        ).fetchone()
+        return row is not None
+
+    def list_panel_admins(self):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT user_id, added_by, added_at FROM panel_admins ORDER BY added_at ASC"
+        ).fetchall()
+
+    def ban_user(self, user_id, reason, banned_by):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO panel_bans (user_id, reason, banned_by) VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason, "
+                "banned_by=excluded.banned_by",
+                (int(user_id), str(reason or "")[:200], int(banned_by)),
+            )
+            conn.commit()
+
+    def unban_user(self, user_id):
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM panel_bans WHERE user_id = ?", (int(user_id),)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def is_banned_user(self, user_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT 1 FROM panel_bans WHERE user_id = ?", (int(user_id),)
+        ).fetchone()
+        return row is not None
+
+    def write_panel_audit(self, admin_id, action, target="", result="", keep=2000):
+        """Append one audit row; prune to the newest `keep` rows so the
+        table can't grow without bound."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO panel_audit (admin_id, action, target, result) "
+                "VALUES (?, ?, ?, ?)",
+                (int(admin_id), str(action)[:80], str(target)[:200], str(result)[:200]),
+            )
+            conn.execute(
+                "DELETE FROM panel_audit WHERE id NOT IN "
+                "(SELECT id FROM panel_audit ORDER BY id DESC LIMIT ?)",
+                (max(1, int(keep)),),
+            )
+            conn.commit()
+
+    def list_panel_audit(self, limit=20, offset=0):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT id, admin_id, action, target, result, created_at "
+            "FROM panel_audit ORDER BY id DESC LIMIT ? OFFSET ?",
+            (max(1, int(limit)), max(0, int(offset))),
+        ).fetchall()
+
+    def count_panel_audit(self):
+        conn = self._connect()
+        row = conn.execute("SELECT COUNT(*) FROM panel_audit").fetchone()
+        return row[0] if row else 0
+
+    # =========================
+    # Stage 3A: broadcast runs
+    # =========================
+    def create_broadcast(self, admin_id, target, content_type, total, skipped_banned):
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "INSERT INTO panel_broadcasts "
+                "(admin_id, target, content_type, total, skipped_banned, status) "
+                "VALUES (?, ?, ?, ?, ?, 'running')",
+                (int(admin_id), str(target)[:40], str(content_type)[:20],
+                 int(total), int(skipped_banned)),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def update_broadcast_progress(self, broadcast_id, sent, unreachable, failed):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE panel_broadcasts SET sent = ?, unreachable = ?, failed = ? "
+                "WHERE id = ?",
+                (int(sent), int(unreachable), int(failed), int(broadcast_id)),
+            )
+            conn.commit()
+
+    def finish_broadcast(self, broadcast_id, status):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE panel_broadcasts SET status = ?, finished_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
+                (str(status)[:20], int(broadcast_id)),
+            )
+            conn.commit()
+
+    def list_broadcasts(self, limit=10):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT id, admin_id, target, content_type, total, sent, unreachable, "
+            "failed, skipped_banned, status, started_at, finished_at "
+            "FROM panel_broadcasts ORDER BY id DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+
+    def mark_interrupted_broadcasts(self):
+        """At startup: any leftover 'running' row died with the process.
+        Returns the count marked. Never auto-resumes (would duplicate sends)."""
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "UPDATE panel_broadcasts SET status = 'interrupted', "
+                "finished_at = CURRENT_TIMESTAMP WHERE status = 'running'"
+            )
+            conn.commit()
+            return cur.rowcount
+
+    # =========================
+    # Stage 2C: reset user data (owner-only). One transaction, rollback on
+    # error, audit row inline. Namespace rules:
+    # - Per-user chat namespaces: <uid>, <uid>#<sid>, inline_[light_]<uid>,
+    #   guest_[light_]<uid>, light_<uid> (Light has no sessions — verified:
+    #   its only memory_id form is light_<chat_id>; groups are negative so
+    #   light_<positive uid> is never a group). debate_*, tldr_* and
+    #   light_<negative id> are NEVER touched (shared per-chat state).
+    # - Separator-safe matching: the session LIKE pattern is '<uid>#%' — the
+    #   literal '#' separator means uid 12 can never match 123#... (3rd char
+    #   differs); sids are alnum (no %/_ wildcards possible). Everything
+    #   else is exact equality.
+    # - Todos/reminders: DELETE only rows in the user's private chat
+    #   (chat_id = str(uid)); group rows they created are KEPT (counted for
+    #   the confirm screen); rows others created but assigned to them are
+    #   unassigned (assignee NULLed), never deleted.
+    # - panel_audit/panel_bans/panel_admins are NEVER touched (ban and
+    #   adminship survive a reset by design). Caller enforces the
+    #   owner/admin/self refusal; banned users MAY be reset.
+    # =========================
+    @staticmethod
+    def _user_chat_scope(uid):
+        s = str(int(uid))
+        where = ("(chat_id = ? OR chat_id LIKE ? ESCAPE '\\' "
+                 "OR chat_id IN (?,?,?,?,?))")
+        params = [s, f"{s}#%",
+                  f"inline_{s}", f"inline_light_{s}",
+                  f"guest_{s}", f"guest_light_{s}", f"light_{s}"]
+        return where, params
+
+    def count_user_data(self, user_id):
+        """Per-store counts for the reset confirm screen (reads only)."""
+        uid = int(user_id)
+        s = str(uid)
+        where, params = self._user_chat_scope(uid)
+        conn = self._connect()
+        counts = {}
+        counts["messages"] = conn.execute(
+            f"SELECT COUNT(*) FROM messages WHERE {where}", params).fetchone()[0]
+        counts["summaries"] = conn.execute(
+            f"SELECT COUNT(*) FROM summaries WHERE {where}", params).fetchone()[0]
+        for table, col in (("sessions", "user_id"),
+                           ("user_facts", "user_id"),
+                           ("behavior_stats", "user_id"),
+                           ("chat_log", "user_id"),
+                           ("group_members", "user_id")):
+            counts[table] = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {col} = ?", (uid,)).fetchone()[0]
+        counts["active_session"] = conn.execute(
+            "SELECT COUNT(*) FROM user_active_sessions WHERE user_id = ?", (uid,)).fetchone()[0]
+        counts["known_dm"] = conn.execute(
+            "SELECT COUNT(*) FROM known_chats WHERE chat_id = ?", (s,)).fetchone()[0]
+        counts["bot_media"] = conn.execute(
+            "SELECT COUNT(*) FROM bot_media_messages WHERE chat_id = ?", (s,)).fetchone()[0]
+        for table in ("todos", "reminders"):
+            counts[f"{table}_private"] = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE chat_id = ?", (s,)).fetchone()[0]
+            counts[f"{table}_unassign"] = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE assignee_id = ? AND chat_id != ?",
+                (uid, s)).fetchone()[0]
+            counts[f"{table}_group_kept"] = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE creator_id = ? AND chat_id != ?",
+                (uid, s)).fetchone()[0]
+        return counts
+
+    def reset_user_data(self, admin_id, user_id):
+        """Delete everything count_user_data reports (except the *_group_kept
+        counters, which are display-only) in ONE transaction under the write
+        lock, plus one audit row with per-store counts. Rollback on any
+        error. Returns the counts dict."""
+        uid = int(user_id)
+        s = str(uid)
+        where, params = self._user_chat_scope(uid)
+        with self._write_lock:
+            conn = self._connect()
+            try:
+                counts = {}
+                counts["messages"] = conn.execute(
+                    f"DELETE FROM messages WHERE {where}", params).rowcount
+                counts["summaries"] = conn.execute(
+                    f"DELETE FROM summaries WHERE {where}", params).rowcount
+                for table, col in (("sessions", "user_id"),
+                                   ("user_facts", "user_id"),
+                                   ("behavior_stats", "user_id"),
+                                   ("chat_log", "user_id"),
+                                   ("group_members", "user_id")):
+                    counts[table] = conn.execute(
+                        f"DELETE FROM {table} WHERE {col} = ?", (uid,)).rowcount
+                counts["active_session"] = conn.execute(
+                    "DELETE FROM user_active_sessions WHERE user_id = ?", (uid,)).rowcount
+                counts["known_dm"] = conn.execute(
+                    "DELETE FROM known_chats WHERE chat_id = ?", (s,)).rowcount
+                counts["bot_media"] = conn.execute(
+                    "DELETE FROM bot_media_messages WHERE chat_id = ?", (s,)).rowcount
+                for table in ("todos", "reminders"):
+                    counts[f"{table}_group_kept"] = conn.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE creator_id = ? AND chat_id != ?",
+                        (uid, s)).fetchone()[0]
+                    counts[f"{table}_private"] = conn.execute(
+                        f"DELETE FROM {table} WHERE chat_id = ?", (s,)).rowcount
+                    counts[f"{table}_unassign"] = conn.execute(
+                        f"UPDATE {table} SET assignee_id = NULL, assignee_username = NULL "
+                        f"WHERE assignee_id = ? AND chat_id != ?", (uid, s)).rowcount
+                summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                conn.execute(
+                    "INSERT INTO panel_audit (admin_id, action, target, result) "
+                    "VALUES (?, 'user_reset', ?, ?)",
+                    (int(admin_id), s, summary[:200]),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            return counts
 
     def maybe_vacuum(self, interval_days=7):
         """Rebuild the DB file to reclaim space from purged rows, at most

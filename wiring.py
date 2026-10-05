@@ -8,9 +8,9 @@ from telebot import types
 
 from bots import admin_notifier, bot, bot_light
 from config import (
-    ADMIN_ID,
     DB_FILE,
     DROP_PENDING_UPDATES,
+    OWNER_ID,
     SHUTDOWN_GRACE_SECONDS,
     TELEGRAM_UPLOAD_MAX_BYTES,
 )
@@ -42,8 +42,9 @@ def register_all():
     # first-match-wins) and register the relay command. Must run
     # before polling starts; safe to call once.
     import handlers.guard  # noqa: F401  (foreign commands + middleware first)
-    ig_relay.register(bot=bot, admin_id=ADMIN_ID, get_deps=_ig_relay_deps)
+    ig_relay.register(bot=bot, admin_id=OWNER_ID, get_deps=_ig_relay_deps)
     import handlers.admin  # noqa: F401
+    import handlers.panel  # noqa: F401  (panel callbacks + input interceptor before tasks wizards)
     import handlers.tasks  # noqa: F401
     import handlers.basics  # noqa: F401
     import handlers.surfaces  # noqa: F401
@@ -51,6 +52,25 @@ def register_all():
     import handlers.medialink  # noqa: F401
     import handlers.memory_cmds  # noqa: F401
     import handlers.chat  # noqa: F401  (catch-alls register last)
+
+    # Central ban + maintenance gate on BOTH bot instances (verified single
+    # dispatch entry: TeleBot.process_new_updates; middleware can't cancel).
+    # Re-apply DB-backed runtime settings (rate limits, Tavily budget) so a
+    # restart picks up panel-changed values. Leftover 'running' broadcasts
+    # died with the previous process: mark interrupted (never auto-resume —
+    # that would duplicate sends).
+    from services.panel_settings import install_central_gate, reapply_runtime_settings
+
+    reapply_runtime_settings()
+    try:
+        interrupted = repo.mark_interrupted_broadcasts()
+        if interrupted:
+            log.warning("Marked %d leftover broadcast(s) as interrupted.", interrupted)
+    except Exception:
+        log.warning("interrupted-broadcast marking failed", exc_info=True)
+    install_central_gate(bot)
+    if bot_light is not None:
+        install_central_gate(bot_light)
 
 
 def _ig_relay_deps():

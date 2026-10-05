@@ -28,6 +28,42 @@ class RateLimiter:
             "instagram": (5, 40),
             "youtube": (5, 40),
         }
+        # Panel overrides (Stage 2B): global per-user budgets + per-user
+        # exceptions. Applied from the DB by sync_rate_limits() at startup
+        # and after every panel write; allow() itself stays pure in-memory
+        # (zero DB reads on the hot path).
+        self._global_overrides = {}  # category -> per_user_per_min
+        self._user_overrides = {}  # (category, user_id) -> per_user_per_min
+
+    def set_global_override(self, category, per_user_per_min):
+        """Replace the per-user budget for a category (global ceiling kept
+        from the built-in defaults). Copy-swap: readers always see a
+        complete map, never a half-written one."""
+        with self._lock:
+            if category in self._limits:
+                updated = dict(self._global_overrides)
+                updated[category] = max(1, int(per_user_per_min))
+                self._global_overrides = updated
+
+    def set_user_overrides(self, overrides):
+        """Replace the whole per-user map: {(uid, category): per_min} or
+        {(category, uid): per_min} — normalized here to (category, uid).
+        Single reference swap under the lock; in-flight allow() calls
+        finish on the old map, new calls see the complete new one."""
+        normalized = {}
+        for (a, b), per_min in dict(overrides or {}).items():
+            if a in self._limits and isinstance(b, int):
+                normalized[(a, b)] = max(1, int(per_min))  # (category, uid)
+            elif b in self._limits and isinstance(a, int):
+                normalized[(b, a)] = max(1, int(per_min))
+        with self._lock:
+            self._user_overrides = normalized
+
+    def clear_user_override(self, category, user_id):
+        with self._lock:
+            updated = dict(self._user_overrides)
+            updated.pop((category, int(user_id)), None)
+            self._user_overrides = updated
 
     def _prune(self, lst, cutoff):
         return [t for t in lst if t > cutoff]
@@ -42,8 +78,12 @@ class RateLimiter:
         """Return (allowed: bool, scope: str|None)."""
         now = time.time()
         cutoff = now - 60
-        per_user, per_global = self._limits.get(category, (10, 200))
+        builtin_user, per_global = self._limits.get(category, (10, 200))
         with self._lock:
+            per_user = self._user_overrides.get(
+                (category, user_id),
+                self._global_overrides.get(category, builtin_user),
+            )
             g = self._prune(self._global.get(category, []), cutoff)
             if len(g) >= per_global:
                 self._global[category] = g

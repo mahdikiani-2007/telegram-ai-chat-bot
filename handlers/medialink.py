@@ -28,6 +28,7 @@ from services.media import (
     extract_youtube_urls,
     send_large_file_via_userbot,
 )
+from services import panel_settings as ps
 from services.streaming import _safe_reply_to, rate_limited_reply
 from sessions import _waiting_text_input
 
@@ -47,6 +48,11 @@ def handle_instagram_link(message):
             return
         url = urls[0]  # only the first link per message, bounds cost if someone pastes many
         is_story = "/stories/" in url.lower()
+
+        # Ambient auto-trigger: silent in groups when disabled, rate-limited
+        # notice in private; admins exempt. Must precede any status message.
+        if not ps.feature_gate_message(bot, message, "instagram", explicit=False):
+            return
 
         allowed, _scope = rate_limiter.allow("instagram", message.from_user.id)
         if not allowed:
@@ -143,6 +149,9 @@ def handle_youtube_link(message):
             return
         url = urls[0]
 
+        if not ps.feature_gate_message(bot, message, "youtube", explicit=False):
+            return
+
         allowed, _scope = rate_limiter.allow("youtube", message.from_user.id)
         if not allowed:
             METRICS["ratelimited"] += 1
@@ -206,6 +215,8 @@ def handle_youtube_link(message):
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("yt_dl_"))
 def handle_youtube_quality_choice(call):
     try:
+        if not ps.feature_gate_callback(bot, call, "youtube"):
+            return
         parts = call.data.split("_", 3)  # ["yt", "dl", token, key]
         if len(parts) < 4:
             bot.answer_callback_query(call.id, "❌ Invalid callback data.")

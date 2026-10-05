@@ -13,12 +13,13 @@ from ai import agnes
 from bots import admin_notifier, bot, bot_light
 from config import (
     ADMIN_ID,
+    OWNER_ID,
     TELEGRAM_FILE_BASE_URL,
     TELEGRAM_TOKEN,
     TELEGRAM_UPLOAD_MAX_BYTES,
 )
 from db import repo
-from handlers.shared import extract_text_from_message
+from handlers.shared import extract_text_from_message, is_admin
 from infra import HTTP
 from limits import rate_limiter
 from metrics import METRICS
@@ -32,6 +33,7 @@ from services.memory import (
     maybe_summarize,
 )
 from services.search import inject_search_context, maybe_web_search
+from services import panel_settings as ps
 from services.streaming import (
     _consume_active_request,
     _register_active_request,
@@ -85,6 +87,40 @@ def _inline_ask_keyboard():
     markup.add(types.InlineKeyboardButton("🔄 سؤال بعدی", switch_inline_query_current_chat=""))
     return markup
 
+def _feature_allows_surface(bot_instance, query_obj, feature, user_id=None, guest_query_id=None):
+    """Feature gate for inline/guest surfaces (Stage 2B). Always answers
+    (never hangs the client): disabled → empty inline answer / disabled
+    text article for guest. Admins exempt. Returns True to proceed."""
+    try:
+        if user_id is None:
+            user = getattr(query_obj, "from_user", None)
+            user_id = getattr(user, "id", 0) or 0
+        if is_admin(user_id):
+            return True
+        if ps.feature_enabled(feature):
+            return True
+        if feature == "inline":
+            try:
+                bot_instance.answer_inline_query(query_obj.id, [], cache_time=1, is_personal=True)
+            except Exception:
+                pass
+        else:
+            try:
+                result = types.InlineQueryResultArticle(
+                    id=hashlib.md5(str(guest_query_id).encode("utf-8")).hexdigest(),
+                    title="⏸ Disabled",
+                    input_message_content=types.InputTextMessageContent(
+                        "⏸ This feature is temporarily disabled by the admins."),
+                )
+                bot_instance.answer_guest_query(guest_query_id, result)
+            except Exception:
+                pass
+        return False
+    except Exception:
+        log.warning("surface feature gate failed; allowing (fail open)", exc_info=True)
+        return True
+
+
 def _handle_inline_query_generic(bot_instance, inline_query, persona_label):
     """Stage 1 — answer fast with a single placeholder result. No AI call
     happens here; only once the person actually taps it (stage 2)."""
@@ -92,6 +128,9 @@ def _handle_inline_query_generic(bot_instance, inline_query, persona_label):
         query_text = (inline_query.query or "").strip()
         if len(query_text) < INLINE_ASK_MIN_LEN:
             bot_instance.answer_inline_query(inline_query.id, [], cache_time=1, is_personal=True)
+            return
+
+        if not _feature_allows_surface(bot_instance, inline_query, "inline"):
             return
 
         result = types.InlineQueryResultArticle(
@@ -268,6 +307,10 @@ def _handle_guest_message_generic(bot_instance, guest_msg, is_light):
         if not user_text:
             return
 
+        if not _feature_allows_surface(bot_instance, guest_msg, "guest",
+                                       user_id=user_id, guest_query_id=guest_query_id):
+            return
+
         allowed, _scope = rate_limiter.allow("inline", user_id)
         if not allowed:
             _answer("🚫 تعداد سؤالات شما در این حالت بیش از حد مجاز است. کمی صبر کنید.", use_markdown=False)
@@ -283,7 +326,11 @@ def _handle_guest_message_generic(bot_instance, guest_msg, is_light):
         # ready — no placeholder, no intermediate message.
         ig_urls = extract_instagram_urls(user_text)
         if ig_urls:
-            if not ADMIN_ID:
+            # Owner's DM is the throwaway storage chat for the file_id trick.
+            # OWNER_ID with ADMIN_ID fallback preserves today's behavior when
+            # no owner is configured (both 0 → feature unavailable, same as before).
+            storage_chat_id = OWNER_ID or ADMIN_ID
+            if not storage_chat_id:
                 _answer(
                     "📥 دانلود اینستاگرام توی حالت مهمان فعلاً در دسترس نیست (ADMIN_ID روی سرور تنظیم نشده). "
                     "لینک رو توی پیوی برام بفرست یا منو به یه گروه اضافه کن.",
@@ -307,7 +354,7 @@ def _handle_guest_message_generic(bot_instance, guest_msg, is_light):
                     _answer("⚠️ حجم فایل بیشتر از سقف مجاز تلگرامه (۵۰ مگابایت) و قابل ارسال نیست.", use_markdown=False)
                     return
 
-                file_id = _upload_for_guest_reply(bot_instance, f["path"], f["is_video"], ADMIN_ID)
+                file_id = _upload_for_guest_reply(bot_instance, f["path"], f["is_video"], storage_chat_id)
                 if not file_id:
                     _answer("❌ خطایی توی آماده‌سازی فایل برای ارسال رخ داد.", use_markdown=False)
                     return
@@ -536,6 +583,9 @@ def handle_translate(message):
 
         category = "vision" if is_photo else "chat"
         if not rate_limited_reply(message, category):
+            return
+
+        if not ps.feature_gate_message(bot, message, "tr", explicit=True):
             return
 
         target_lang, source_text = _parse_tr_command(raw_text)

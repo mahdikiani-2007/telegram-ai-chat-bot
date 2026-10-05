@@ -10,6 +10,7 @@ from bots import bot
 from db import repo
 from handlers.shared import is_admin
 from metrics import METRICS
+from services import panel_settings as ps
 from services.streaming import (
     _safe_reply_to,
     escape_markdown,
@@ -599,6 +600,9 @@ def handle_remind_command(message):
 
         if not reminder_text.strip():
             _safe_reply_to(bot, message, "⚠️ متن یادآوری نمی‌تواند خالی باشد.")
+            return
+
+        if not ps.feature_gate_message(bot, message, "reminders", explicit=True):
             return
 
         session_key = (str(message.chat.id), user_id)

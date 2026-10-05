@@ -399,6 +399,17 @@ YOUTUBE_URL_RE = re.compile(
 
 _youtube_quality_sessions = TTLSessionStore(SESSION_TTL_SECONDS)  # token -> {url, title, options, user_id}
 
+
+def clear_user_yt_sessions(user_id):
+    """Drop YT picker sessions belonging to this user (Stage 2C reset).
+    Never raises."""
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return
+    _youtube_quality_sessions.discard_where(
+        value_pred=lambda v: isinstance(v, dict) and v.get("user_id") == uid)
+
 _ffmpeg_path_cache = {"checked": False, "path": None}
 
 def _ffmpeg_location():

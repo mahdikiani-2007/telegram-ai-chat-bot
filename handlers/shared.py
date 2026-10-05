@@ -2,11 +2,20 @@ import logging
 import random
 import re
 import threading
+import time
 
-from config import ADMIN_ID
+from config import ADMIN_ID, ADMIN_IDS, OWNER_ID
 from db import repo
 
 log = logging.getLogger("L-bot")
+
+
+def _valid_uid(user_id):
+    """Strict numeric-id check shared by is_admin/is_owner: only positive
+    ints pass. 0/None/negatives/non-ints (incl. bools) are never admins."""
+    if isinstance(user_id, bool):
+        return False
+    return isinstance(user_id, int) and user_id > 0
 
 
 def extract_text_from_message(message):
@@ -15,11 +24,91 @@ def extract_text_from_message(message):
     )
 
 # =========================
-# Admin Panel & Broadcast System
+# Admin identity
 # =========================
+def is_owner(user_id: int) -> bool:
+    """True only for the owner (first ID in ADMIN_IDS, else ADMIN_ID)."""
+    if not _valid_uid(user_id):
+        return False
+    return bool(OWNER_ID) and user_id == OWNER_ID
+
+
+# =========================
+# Full-set identity caches (G1): the WHOLE panel_admins / panel_bans
+# tables, one query each, 10s TTL. The gate calls is_admin/is_banned on
+# EVERY update, so per-update DB reads must be ZERO with a warm cache.
+# - invalidate_identity_caches() runs on every panel write in this process.
+# - A failed refresh keeps serving the stale copy; with no copy at all the
+#   answer is empty (env-listed admins still pass via ADMIN_IDS — fail
+#   closed for permissions, fail open for bans).
+# =========================
+_IDENTITY_TTL = 10.0
+
+_identity_cache = {"admins": (frozenset(), 0.0), "bans": (frozenset(), 0.0)}
+_identity_lock = threading.Lock()
+
+
+def _refresh_identity_set(table, id_column):
+    """One full-table SELECT. Returns (frozenset, ok). Never raises."""
+    try:
+        conn = repo._connect()
+        rows = conn.execute(
+            f"SELECT {id_column} FROM {table}"
+        ).fetchall()
+        return frozenset(int(r[0]) for r in rows), True
+    except Exception:
+        log.warning("identity cache refresh failed for %s", table, exc_info=True)
+        return None, False
+
+
+def get_cached_admin_ids():
+    """DB-added admin IDs (env IDs in ADMIN_IDS are always valid on top)."""
+    return _get_cached_set("admins", "panel_admins", "user_id")
+
+
+def _get_cached_set(name, table, id_column):
+    now = time.time()
+    with _identity_lock:
+        ids, expires = _identity_cache[name]
+        if now < expires:
+            return ids
+    fresh, ok = _refresh_identity_set(table, id_column)
+    with _identity_lock:
+        if ok:
+            _identity_cache[name] = (fresh, now + _IDENTITY_TTL)
+            return fresh
+        old_ids, _exp = _identity_cache[name]
+        return old_ids  # stale copy on failure; empty if never loaded
+
+
+def get_cached_ban_ids():
+    """Banned user IDs. Fail open: refresh failure yields stale/empty."""
+    return _get_cached_set("bans", "panel_bans", "user_id")
+
+
+def invalidate_identity_caches():
+    """Call after every panel_admins/panel_bans write in this process."""
+    with _identity_lock:
+        _identity_cache["admins"] = (frozenset(), 0.0)
+        _identity_cache["bans"] = (frozenset(), 0.0)
+
+
 def is_admin(user_id: int) -> bool:
-    """Check whether the given user ID belongs to the bot administrator."""
-    return user_id == ADMIN_ID
+    """True for the owner, any env-listed admin, or any DB-added admin.
+
+    Zero DB reads with a warm cache (full-set cache above). Fail closed:
+    refresh failure serves stale/empty, so DB-added admins are denied while
+    env-listed admins still pass — never True by default.
+    """
+    if not _valid_uid(user_id):
+        return False
+    if user_id in ADMIN_IDS:
+        return True
+    try:
+        return user_id in get_cached_admin_ids()
+    except Exception:
+        log.warning("is_admin: admin-set lookup failed; env-only answer", exc_info=True)
+        return False
 
 # =========================
 # Sessions (private chats only) — each user gets independent conversation
