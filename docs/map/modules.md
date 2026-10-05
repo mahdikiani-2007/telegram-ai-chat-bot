@@ -1,0 +1,79 @@
+# Modules reference
+
+Per-source-file responsibility + key public API. Only functions/classes other modules call or handlers dispatch to. Paths relative to project root.
+
+## Root modules
+
+| File | Responsibility | Key public API | Imports from project | Imported by |
+|---|---|---|---|---|
+| `bot.py` | Historic entrypoint shim (kept for `start.sh`/Docker). No logic. | `main` (re-exported from `main.py`) | `main` | `start.sh`, Dockerfile |
+| `main.py` | App entrypoint: signal handlers, diagnostics, daemon threads, polling threads, shutdown wait. | `main()` | `bots`, `config`, `services.backup/digest/media/memory/scheduling`, `sessions`, `wiring`, `ig_relay` | `bot.py` |
+| `wiring.py` | Handler registration order (guard → admin → **panel** → tasks → … → chat last), central-gate install on both bots, runtime-settings reapply, interrupted-broadcast marking, polling loops, command-menu sync, shutdown sequence. | `register_all()`, `run_bot_l()`, `run_bot_light()`, `_sync_bot_commands()`, `_ensure_polling_mode(inst)`, `_shutdown_sequence(threads)`, `shutdown_event`, `POLLING_ALLOWED_UPDATES` | `bots`, `config`, `db.repo`, `metrics`, `services.media`, `services.panel_settings`, `handlers.*`, `ig_relay` | `main.py`, tests/tools |
+| `config.py` | All env/config + logging setup + `DATA_DIR`/`DB_FILE` + Iran tz. Importing it creates dirs. | Constants only (see `docs/map/config.md`); `IRAN_TZ`, `UTC_TZ`, `DB_FILE`, `DATA_DIR` | none (stdlib + env) | everything |
+| `bots.py` | `TeleBot` instances + lazy identity cache + throttled admin notifier. | `bot`, `bot_light` (None if unset), `get_bot_identity()`, `get_bot_light_identity()`, `admin_notifier`, `AdminNotifier.notify(type, detail)` | `infra` (side-effect), `config` | handlers, services, wiring, main |
+| `infra.py` | Shared HTTP session (pool+retry), telebot `apihelper` patching (custom sender, middleware on, Local API URLs), LLM auth headers. | `HTTP`, `_chat_headers()`, `_image_headers()` | `config` | `bots` (side-effect), `ai`, handlers, services |
+| `db.py` | SQLite `ChatRepository` (thread-local conns + write lock, WAL) + broadcast helpers. Panel: `panel_settings/admins/bans/audit/broadcasts` tables + paged list/count/search + claim ban-subquery (oldest-first) + `reset_user_data()` + `mark_interrupted_broadcasts()`. | `repo` (singleton), `fetch_all_group_ids()`, `fetch_all_user_ids()`, `_build_all_members_mention(chat_id)`; repo methods: `save_message/get_history/get_summary/count_messages`, `save_summary`, `clear_chat`, `delete_last_user_message`, todos/reminders CRUD + `claim_due_*`/`release_*_claim`/`note_*_failure`, `upsert_known_chat/upsert_group_member`, `mark_bot_media_message/is_bot_media_message`, sessions CRUD, `save_digest_lines/get_recent_digest_lines`, user-facts CRUD, `record_behavior/get_day_behavior_rows`, `log_group_chat/get_chat_log_window`, `purge_old_*`, `maybe_vacuum`, `checkpoint_wal` | `config` | handlers, services, wiring |
+| `ai.py` | LLM client over OpenAI-compatible `/chat/completions` + image gen. Retry-before-content, never retry mid-stream. | `agnes` (singleton `AgnesClient`); `stream_chat(messages)` yields `("delta"|"status"|"error", value)`; `generate(messages)`, `summarize(block)`, `generate_image(prompt)` | `config`, `infra` | handlers, services |
+| `sessions.py` | TTL session stores for all wizards + panel inputs + GC loop. | `TTLSessionStore` (`set/get/pop/discard/discard_where/sweep`); stores `_waiting_text_input`, `_todo_*`, `_remind_*`, `_panel_input_sessions` (`PANEL_ADD_ADMIN/USER_SEARCH/GROUP_SEARCH/SETTING_VALUE/LIMIT_ADD/BROADCAST_CHAT/BROADCAST_CONTENT`); state consts `WAITING_FOR_*`; `clear_user_state()`, `_register_late_session_store()`, `_session_gc_loop()` | `config`, `db.repo` | handlers, `services.media`, main |
+| `limits.py` | Rate limiting + anti-spam. In-memory panel overrides (global per-cat + per-user, applied via sync; hot path stays DB-free). | `rate_limiter.allow(cat, uid)` → `(bool, scope)`; cats: chat/pic/vision/inline/instagram/youtube; `set_global_override()`, `set_user_overrides()`, `clear_user_override()`; `spam_tracker.check(key)` → `("muted"\|"warn"\|"ok", value)` | none | handlers, surfaces |
+| `metrics.py` | In-process counters shown by `/stats`. | `METRICS` dict (`handled, llm_errors, ratelimited, summaries, web_searches, digests_sent, instagram_downloads, youtube_downloads`, + dynamic `ig_relay_relayed, facts_learned, backups_sent, tldr_requests, poller_restarts, ig_relay_errors`), `_START_TIME` | none | handlers, services, wiring |
+| `timeutil.py` | Iran-time helpers + user time/recurrence parsing. | `iran_now()`, `iran_now_epoch()`, `iran_tomorrow_9am_epoch()`, `iran_next_digest_epoch()`, `format_trigger_time_iran(ts)`, `format_deadline_display(ts)`, `parse_custom_time_input(s)` → epoch\|None, `_parse_custom_interval_seconds(s)` | `config` | handlers.tasks, services |
+| `ig_relay.py` | Standalone IG-group-DM → Telegram relay (instagrapi poll + `/relay` admin surface). Own `RelayStore` tables in same DB. | `register(bot, admin_id, get_deps)`, `start()`, `InstagramRelay` (`run_forever/poll_once/relay_message/handle_command/status_text`), `RelayStore`, `extract_post_urls(msg)`, `sender_names()`, `format_attribution()` | env only + injected deps (`download_post`, `mark_bot_media`, `text_url_extractor`) | `wiring.register_all`, `main` |
+
+## `handlers/` (registered in this order — telebot first-match-wins)
+
+| File | Responsibility | Key handlers |
+|---|---|---|
+| `handlers/shared.py` | Shared helpers, no decorators (safe to import anywhere). | `is_admin(uid)` (env set or cached DB set, fail closed), `is_owner(uid)`, `get_cached_admin_ids/ban_ids()` (10s full-set, zero warm reads), `invalidate_identity_caches()`, `extract_text_from_message(msg)`, `_resolve_private_session(uid, text)` → `(sid, memory_id)`, `_new_session_id()`, `_session_title_from_text()`, `SESSION_MAX_PER_USER=20` |
+| `handlers/guard.py` | Cross-bot command swallow + per-update chat/member tracking middleware. | `_ignore_foreign_bot_commands(_light)`, `_track_chat_middleware(_light)` |
+| `handlers/admin.py` | `/stats` (any admin), owner-only `/digest`. Legacy broadcast flow REMOVED in Stage 3A. | `handle_stats`, `handle_digest_command` |
+| `handlers/panel.py` | `/admin` inline panel (`pnl_` callbacks, typed-input interceptor, single message edited in place). Menus: home/Status/Maintenance/Admins(owner)/Audit/Users/Groups/Features/Settings/Jobs/Stats/Broadcast(owner). | `handle_admin_panel`, `panel_guard`, `handle_panel_home/status/maint/admins/audit`, `handle_panel_users/user/groups/group/ban/unban/leave/reset`, `handle_panel_features/settings/limits`, `handle_panel_broadcast_menu/target/one/confirm/stop`, `handle_panel_jobs/pause/resume/backup_run`, `handle_panel_stats`, `handle_panel_text_input`, `handle_stale_keyboard_text` |
+| `handlers/tasks.py` | `/todo`+`/remind` multi-step wizards, `/todos`, all todo/reminder callbacks, waiting-text interceptor. | `handle_todo_command`, `handle_remind_command`, `handle_todos_command`, `handle_waiting_text_input`, `handle_todo_done/delete`, `handle_remind_snooze/dismiss`, `handle_todo_priority/category/deadline_*/recurrence`, `handle_remind_time/mention/recurrence/custom_*`, `handle_wait_cancel` |
+| `handlers/basics.py` | Core commands + session switching. | `handle_start/session/new`, `handle_reset/stop`, `handle_image_generation` (`/pic`), `handle_session_switch` (`sessw_` callback) |
+| `handlers/surfaces.py` | Inline mode, Guest Mode, `/tr` translation. | `_handle_inline_query_generic`, `_handle_chosen_inline_result_generic`, `_handle_guest_message_generic`, `handle_translate`, `_parse_tr_command()`, `_build_translate_messages()` |
+| `handlers/debate.py` | Admin `/stopall` for bot L. | `handle_stopall` (Light's own lives in `handlers/chat.py`) |
+| `handlers/medialink.py` | IG/YT link interception + YT quality picker. | `handle_instagram_link`, `handle_youtube_link`, `handle_youtube_quality_choice` (`yt_dl_` callback) |
+| `handlers/memory_cmds.py` | `/tldr` group summaries, `/myfacts`, `/forget`. | `handle_tldr`, `handle_myfacts`, `handle_forget` |
+| `handlers/chat.py` | Catch-all chat pipelines for both bots (L + Light), debate trigger, name-calls, spam/rate, vision, streaming. | `handle_all_messages`, `handle_light_messages`, `handle_start_light/stop_light/stopall_light`, `should_respond(_light)`, `is_name_call()` |
+| `handlers/__init__.py` | Empty (namespace only). | — |
+
+## `services/`
+| File | Responsibility | Key public API | Imported by |
+|---|---|---|---|
+| `services/memory.py` | Personas (`SYSTEM_PROMPT`, `SYSTEM_PROMPT_LIGHT`), context build, rolling summaries, fact extractor worker, nightly behavior profiler, `/tldr` constants. | `build_context(id)`, `build_context_light(id)`, `maybe_summarize(id)`, `fact_extractor` (`submit/run_forever`), `_inject_user_profile()`, `_behavior_profiler_loop()`, TLDR_* consts, `FACT_*` consts, `BEHAVIOR_PROFILE_HOUR` | handlers.chat/surfaces/memory_cmds, main |
+| `services/search.py` | Tavily web search: LLM-gated decision + daily budget (`set_limit`) + injection. | `maybe_web_search(text)`, `maybe_web_search_with_status(bot, chat, ph, text)`, `inject_search_context(text, ctx)`, `tavily_budget`, `tavily_web_search(q)` | handlers.chat/surfaces, services.digest |
+| `services/streaming.py` | LLM→Telegram live-edit streaming, `/stop` registry, markdown/safety helpers. | `stream_to_telegram[_generic]()`, `finalize_message[_generic]()`, `_register_active_request()`, `_consume_active_request()`, `_cancel_active_request()`, `drop_user_requests()`, `_handle_stop_generic(bot, msg)`, `_safe_reply_to(bot, msg, text)`, `escape_markdown()`, `sanitize_backtick_span()`, `split_text()`, `rate_limited_reply(msg, cat)` | handlers, services.debate |
+| `services/media.py` | IG downloader (yt-dlp + OG-tag fallback), YT qualities/download (yt-dlp + ffmpeg), Pyrogram userbot large-file sender. | `download_instagram_post(url)`, `extract_instagram_urls()`, `extract_youtube_urls()`, `_extract_youtube_qualities(url)`, `_download_youtube_quality(url, opt, dir)`, `clear_user_yt_sessions()`, `send_large_file_via_userbot()`, `userbot_available()`, `_userbot_thread_main()`, `_youtube_quality_sessions`, `_is_instagram_link_message/_is_youtube_link_message` | handlers.medialink/surfaces, wiring (`_ig_relay_deps`), ig_relay (via deps), main |
+| `services/debate.py` | L-vs-Light scripted debates in background threads. | `start_debate(msg, topic)`, `stop_all_debates()`, `is_debate_active(chat)`, `is_debate_trigger(text)`, `extract_debate_topic(text)`, `_debate_loop()`, `_active_debates`, `_debate_lock`, `MAX_DEBATE_ROUNDS`, `DEBATE_DELAY` | handlers.chat/admin/debate |
+| `services/digest.py` | Daily 2-section news digest build + group broadcast + repeat-guard memory. | `broadcast_daily_digest(triggered_by)` → `(sent, failed, text)`, `build_daily_digest_text()`, `_digest_scheduler_loop()`, `DIGEST_QUERIES` | handlers.admin, main |
+| `services/panel_jobs.py` | Job registry + pause/resume (settings keys `job.<name>.paused_until`, cached, fail open). Marks reported by scheduler/backup/profiler/relay loops; GC/extractor alive-only. | `job_snapshot()`, `job_mark_start/success/error()`, `job_paused_until()`, `job_pause()`, `job_resume()` |
+| `services/scheduling.py` | Reminder/todo dispatcher: 15s claim-batch poll (oldest-first) + thread-pool fire. Banned creators excluded in claim subquery (private-chat scope); fire-path re-check holds silently; per-cycle pause check + job marks. | `_reminder_scheduler_loop()`, `_fire_reminder(rid, expected)`, `_fire_todo_expiry(tid, expected)`, `_creator_banned_private()`, `_classify_dispatch_error()`, `_next_trigger()`, `CLAIM_STALE_SECONDS=300` | main |
+| `services/backup.py` | Daily retention purge + SQLite snapshot → admin DM + local rotation. Scheduled run holds `_backup_lock`; `send_daily_backup(admin_id)` targets the send; `run_backup_now()` = snapshot+send only (no purge/VACUUM), single-flight. | `_backup_scheduler_loop()`, `send_daily_backup()`, `run_backup_now()`, `build_backup_archive(dir)`, `_run_daily_maintenance()`, `_prune_backup_snapshots()`, `iran_next_backup_epoch()` | main |
+| `services/__init__.py` | Empty (namespace only). | — | — |
+| `services/panel_settings.py` | Stage 1 panel state: cached settings KV, maintenance/ban reads (fail open), access check, audit writer, central-gate installer + extractor. Stage 2B: `FEATURES` + `feature_enabled()` (cached, fail open, per-group debate), `SETTINGS_SPEC` clamps + `setting_value()/validate_setting_value()`, one-query limit overrides, `sync_rate_limits()/reapply_runtime_settings()`, message/callback feature gates. | `get_setting/set_setting/write_setting/delete_setting`, `maintenance_active()`, `is_banned()`, `check_panel_access(msg, owner_only)`, `audit()`, `extract_gate_identity()`, `install_central_gate(inst)`, `feature_enabled()`, `feature_gate_message/callback()` | Imported by |
+
+## `tools/` (dev/CI utilities, never imported by the bot)
+
+| File | Purpose |
+|---|---|
+| `tools/census.py` | Static inventory (handlers, tables, env vars, threads) via AST/regex; no imports. `python3 tools/census.py [--dir PATH] [--save PATH] [--compare PATH]` |
+| `tools/check_order.py` | Guards telebot first-match-wins registration order vs baseline (`tests/baseline_inventory.json`) |
+| `tools/dump_dispatch.py` | Dumps live telebot dispatch tables + handler sources as JSON (`--root DIR --out FILE`) |
+| `tools/dispatch_diff.py` | Diffs two dispatch dumps; exits non-zero on change |
+| `tools/extract.py` | Mechanical extractor used for the monolith→modules refactor (specs in-file; historical) |
+| `tools/shutdown_probe.py` | Live SIGTERM probe harness (test-only, stubbed network) |
+| `tools/verify_restore.py` | Verifies (and optionally restores) a gzipped DB snapshot; see `RESTORE.md`. Stdlib-only |
+
+## `tests/` (hermetic env via `tests/conftest.py` stub tokens + temp `DATA_DIR`)
+
+| File | Covers |
+|---|---|
+| `tests/conftest.py` | Stub `TELEGRAM_TOKEN`/`AGNES_API_KEY`/temp `DATA_DIR` before any import |
+| `tests/test_smoke.py` | Import + DB schema tables (incl. 4 panel tables), handler counts (32 msg / 31 cb), key attrs resolvable from new homes |
+| `tests/test_panel.py` | Panel tests: resolution/failure modes, gate (real-object acks, isolation, non-blocking, cost bound, throttled error log), guard/interceptor, audit; 2A: permission matrix, invalidation, escaping, broadcast/scheduler side effects; 2B: toggle/gate semantics, clamps, zero-DB; 2C: schema-introspection reset test |
+| `tests/test_dispatch.py` | Dispatch-order/behavior contract for handlers |
+| `tests/test_backup.py` | Purge, VACUUM gating, snapshot pruning, build→verify→restore roundtrip |
+| `tests/test_media_youtube.py` | YouTube quality extraction/download option logic |
+| `tests/test_pending_updates.py` | `DROP_PENDING_UPDATES` webhook-delete behavior |
+| `tests/test_shutdown.py` | Graceful shutdown sequence |
+| `tests/baseline_inventory.json` | Census baseline for `check_order.py` |

@@ -21,6 +21,7 @@ EXPECTED_BOT_TABLES = {
     "group_members", "bot_media_messages", "sessions",
     "user_active_sessions", "digest_history", "user_facts",
     "behavior_stats", "chat_log",
+    "panel_settings", "panel_admins", "panel_bans", "panel_audit",
 }
 EXPECTED_RELAY_TABLES = {"ig_relay_config", "ig_relay_seen"}
 
@@ -106,20 +107,21 @@ def test_bot_objects_and_handler_counts():
         pytest.skip(f"handlers migration in progress ({len(done)}/{len(HANDLER_MODULES_CANONICAL)} modules)")
     n_msg = len(getattr(bots_mod.bot, "message_handlers", []))
     n_cb = len(getattr(bots_mod.bot, "callback_query_handlers", []))
-    # Verified monolith baseline (no LIGHT token): 31 message + 19 callback.
-    assert n_msg == 31, f"message handlers: {n_msg}"
-    assert n_cb == 19, f"callback handlers: {n_cb}"
+    # Stage 3B baseline (no LIGHT token): 25 + stale-keyboard guard;
+    # callbacks 60 + 6 Jobs/Stats handlers.
+    assert n_msg == 26, f"message handlers: {n_msg}"
+    assert n_cb == 66, f"callback handlers: {n_cb}"
     assert getattr(bots_mod, "bot_light", None) is None  # no LIGHT token in smoke env
 
 
 def test_handler_functions_importable():
     entry = _bot_module()
-    mods = ("handlers.guard", "handlers.admin", "handlers.tasks",
+    mods = ("handlers.guard", "handlers.admin", "handlers.panel", "handlers.tasks",
             "handlers.basics", "handlers.surfaces", "handlers.debate",
             "handlers.medialink", "handlers.memory_cmds", "handlers.chat",
             "wiring", "bot")
     for attr in ("handle_all_messages", "handle_todo_command",
-                 "handle_remind_command", "handle_admin",
+                 "handle_remind_command", "handle_admin_panel",
                  "handle_waiting_text_input", "handle_tldr",
                  "handle_myfacts", "handle_forget"):
         assert hasattr(entry, attr) or _resolve(mods, attr), attr
