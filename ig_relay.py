@@ -577,12 +577,36 @@ class InstagramRelay:
                 if not self.ensure_logged_in():
                     time.sleep(IG_RELAY_LOGIN_BACKOFF)
                     continue
+                try:
+                    from services.panel_jobs import (
+                        job_mark_start,
+                        job_mark_success,
+                        job_paused_until,
+                    )
+
+                    paused, _label = job_paused_until("relay")
+                    if paused:
+                        time.sleep(60)
+                        continue
+                    job_mark_start("relay")
+                except Exception:
+                    pass
                 self.poll_once()
+                try:
+                    job_mark_success("relay")
+                except Exception:
+                    pass
                 time.sleep(self.poll_seconds)
             except Exception:
                 log.error("ig-relay: poll loop crashed; backing off", exc_info=True)
                 self.state["last_error"] = "poll loop: " + traceback.format_exc(limit=2).splitlines()[-1][:200]
                 self.metrics["ig_relay_errors"] += 1
+                try:
+                    from services.panel_jobs import job_mark_error
+
+                    job_mark_error("relay", traceback.format_exc(limit=3))
+                except Exception:
+                    pass
                 if self.admin_notifier:
                     self.admin_notifier.notify("ig_relay_loop_error", traceback.format_exc(limit=5))
                 time.sleep(IG_RELAY_LOGIN_BACKOFF)
@@ -593,6 +617,13 @@ class InstagramRelay:
         return thread
 
     def poll_once(self):
+        try:
+            from services.panel_settings import feature_enabled
+
+            if not feature_enabled("relay"):
+                return
+        except Exception:
+            pass  # fail open: panel must never break the relay loop
         target = self.store.get_target()
         if not target:
             return
@@ -791,6 +822,15 @@ class InstagramRelay:
         parts = (message.text or "").strip().split()
         sub = parts[1].lower() if len(parts) > 1 else ""
         args = parts[2:]
+        if sub not in ("", "help", "status"):
+            try:
+                from services.panel_settings import feature_enabled
+
+                if not feature_enabled("relay"):
+                    self.reply(message, "⏸ Relay is temporarily disabled by the admins.")
+                    return
+            except Exception:
+                pass
         if not sub or sub == "help":
             self.reply(message, self.help_text())
         elif sub == "status":

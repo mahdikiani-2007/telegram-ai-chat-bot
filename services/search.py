@@ -32,6 +32,12 @@ class DailyBudget:
         self._day = None
         self._count = 0
 
+    def set_limit(self, daily_limit):
+        """Panel override (Stage 2B): clamped 0–1000 upstream; applied from
+        the DB at startup and after every panel write."""
+        with self._lock:
+            self._limit = max(0, int(daily_limit))
+
     def try_consume(self):
         if self._limit <= 0:
             return True  # 0 or negative in env = no cap configured
@@ -46,6 +52,16 @@ class DailyBudget:
             return True
 
 tavily_budget = DailyBudget(TAVILY_DAILY_LIMIT)
+
+
+def _tavily_max_results():
+    """Panel-overrideable max results (Stage 2B)."""
+    try:
+        from services.panel_settings import setting_value
+
+        return setting_value("tavily.max_results")
+    except Exception:
+        return TAVILY_MAX_RESULTS
 
 SEARCH_DECISION_PROMPT = (
     "You decide whether answering the user's latest message requires a live "
@@ -97,7 +113,7 @@ def tavily_web_search(query):
             json={
                 "api_key": TAVILY_API_KEY,
                 "query": query,
-                "max_results": TAVILY_MAX_RESULTS,
+                "max_results": _tavily_max_results(),
                 "search_depth": "basic",
                 "include_answer": False,
             },
@@ -112,7 +128,7 @@ def tavily_web_search(query):
         if not results:
             return ""
         lines = []
-        for item in results[:TAVILY_MAX_RESULTS]:
+        for item in results[:_tavily_max_results()]:
             title = (item.get("title") or "").strip()
             content = (item.get("content") or "").strip()
             if len(content) > 400:

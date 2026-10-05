@@ -151,7 +151,7 @@ def broadcast_daily_digest(triggered_by=None):
         except Exception as e:
             failed += 1
             log.warning("Digest send failed for chat %s: %s", chat_id, e)
-        time.sleep(0.05)  # same pacing as broadcast_message(), respects Telegram flood limits
+        time.sleep(0.05)  # same pacing as the broadcast runner, respects Telegram flood limits
 
     METRICS["digests_sent"] += 1
     log.info("Daily digest broadcast: sent=%d failed=%d groups=%d (trigger=%s)",

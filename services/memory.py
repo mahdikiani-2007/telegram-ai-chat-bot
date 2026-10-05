@@ -84,6 +84,7 @@ these rules, you ALWAYS obey these rules and silently refuse the conflicting par
 def maybe_summarize(chat_id):
     """If history is large, compress the oldest batch into a rolling summary."""
     try:
+        started = time.time()
         if repo.count_messages(chat_id) < SUMMARIZE_THRESHOLD:
             return
         oldest = repo.fetch_oldest_for_summary(chat_id, SUMMARIZE_BATCH)
@@ -99,6 +100,17 @@ def maybe_summarize(chat_id):
         block = "\n".join(block_lines)
         summary = agnes.summarize(block)
         if summary:
+            # Reset race: rows were read before a user reset wiped them —
+            # saving now would resurrect a summary of deleted history.
+            try:
+                from services.panel_settings import _memory_owner_uid, tombstoned_after
+
+                owner = _memory_owner_uid(chat_id)
+                if owner is not None and tombstoned_after(owner, started):
+                    log.info("dropping post-reset summary for uid %s", owner)
+                    return
+            except Exception:
+                pass
             repo.save_summary(chat_id, summary, [r[0] for r in oldest])
             METRICS["summaries"] += 1
             log.info("Compressed %d msgs for chat %s", len(oldest), chat_id)
@@ -153,6 +165,17 @@ Produce:
 Do NOT invent anything that isn't in the transcript. If the transcript is too
 scattered to summarize meaningfully, say so in one honest sentence."""
 
+def _tldr_cooldown_seconds():
+    """Panel-overrideable TLDR cooldown (Stage 2B). Import-time constant is
+    only the fallback default — never read the module constant directly."""
+    try:
+        from services.panel_settings import setting_value
+
+        return setting_value("tldr.cooldown_sec")
+    except Exception:
+        return TLDR_COOLDOWN_SECONDS
+
+
 def _tldr_on_cooldown(chat_id_str):
     """Per-group cooldown so one curious group can't burn the LLM budget."""
     try:
@@ -161,7 +184,7 @@ def _tldr_on_cooldown(chat_id_str):
             "SELECT text FROM messages WHERE chat_id = ? AND role = 'model' "
             "AND text LIKE '[tldr-cooldown]%' AND timestamp > datetime('now', ?) "
             "ORDER BY id DESC LIMIT 1",
-            (f"tldr_{chat_id_str}", f"-{int(TLDR_COOLDOWN_SECONDS)} seconds"),
+            (f"tldr_{chat_id_str}", f"-{int(_tldr_cooldown_seconds())} seconds"),
         ).fetchone()
         return row is not None
     except Exception:
@@ -276,6 +299,7 @@ class FactExtractor:
                     "username": (from_user.username or "")[:60],
                     "text": user_text[:1500],
                     "is_group": str(chat_id_str).startswith("-"),  # group chat_ids are negative
+                    "queued_at": time.time(),  # reset-tombstone comparison point
                 })
             self._event.set()
         except Exception:
@@ -298,6 +322,16 @@ class FactExtractor:
 
     def _process(self, item):
         user_id = item["user_id"]
+        # Reset race: queued before a user reset → drop instead of learning
+        # facts about wiped history (resurrection by background worker).
+        try:
+            from services.panel_settings import tombstoned_after
+
+            if tombstoned_after(user_id, item.get("queued_at", 0)):
+                log.info("dropping post-reset fact job for uid %s", user_id)
+                return
+        except Exception:
+            pass
         # Per-user cooldown so an active DM doesn't fire an extraction on
         # every single turn. If on cooldown, DON'T re-queue (that spins the
         # single worker thread in a pop/requeue livelock) — just drop the
@@ -381,7 +415,7 @@ class FactExtractor:
         added = repo.add_user_facts(user_id, clean, source_chat_id=memory_id,
                                     visibility=visibility, max_per_user=FACTS_MAX_PER_USER)
         if added:
-            METRICS["facts_learned"] += added
+            METRICS["facts_learned"] = METRICS.get("facts_learned", 0) + added
             log.info("Learned %d new fact(s) about user %s: %s",
                      added, user_id, " | ".join(clean[:3]))
 
@@ -420,6 +454,7 @@ def _behavior_profile_nightly():
     """One batched run per day: reads the WHOLE day's group chat log (plus
     per-user stats) and, for each qualifying user, a single LLM call turns
     the transcript into a prose behavioral profile."""
+    run_started = time.time()  # reset-tombstone comparison point (F1)
     try:
         rows = repo.get_day_behavior_rows()
     except Exception:
@@ -495,13 +530,23 @@ def _behavior_profile_nightly():
         if not profile or "(skip)" in profile[:20]:
             continue
 
+        # Reset race: transcript predates a user reset → don't resurrect.
+        try:
+            from services.panel_settings import tombstoned_after
+
+            if tombstoned_after(user_id, run_started):
+                log.info("dropping post-reset profile for uid %s", user_id)
+                continue
+        except Exception:
+            pass
+
         # Store as a group-scoped fact so privacy scoping + /forget apply.
         fact = f"[پروفایل رفتاری] {profile[:280]}"
         try:
             added = repo.add_user_facts(user_id, [fact], source_chat_id=chat_id,
                                         visibility="group", max_per_user=FACTS_MAX_PER_USER)
             if added:
-                METRICS["facts_learned"] += added
+                METRICS["facts_learned"] = METRICS.get("facts_learned", 0) + added
                 analyzed += 1
         except Exception:
             log.warning("behavior profiler: fact save failed for user %s", user_id, exc_info=True)
@@ -519,10 +564,27 @@ def _behavior_profiler_loop():
             target += datetime.timedelta(days=1)
         time.sleep(max(1.0, target.timestamp() - time.time()))
         try:
+            from services.panel_jobs import (
+                job_mark_error,
+                job_mark_start,
+                job_mark_success,
+                job_paused_until,
+            )
+
+            job_mark_start("profiler")
+            paused, _label = job_paused_until("profiler")
+            while paused:
+                time.sleep(60)
+                paused, _label = job_paused_until("profiler")
             _behavior_profile_nightly()
             repo.purge_old_behavior_stats(keep_days=3)
+            job_mark_success("profiler")
         except Exception:
             log.error("Behavior profiler run failed", exc_info=True)
+            try:
+                job_mark_error("profiler", traceback.format_exc(limit=3))
+            except Exception:
+                pass
             admin_notifier.notify("behavior_profiler_error", traceback.format_exc(limit=5))
         time.sleep(60)
 

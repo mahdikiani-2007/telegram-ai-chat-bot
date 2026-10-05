@@ -6,13 +6,14 @@ from bots import bot
 from db import repo
 from limits import rate_limiter
 from metrics import METRICS
+from services import panel_settings as ps
 from services.memory import (
-    TLDR_COOLDOWN_SECONDS,
     TLDR_MAX_CHARS,
     TLDR_MAX_MESSAGES,
     TLDR_PROMPT,
     TLDR_WINDOW_MINUTES,
     _mark_tldr_used,
+    _tldr_cooldown_seconds,
     _tldr_on_cooldown,
 )
 from services.streaming import _safe_reply_to, escape_markdown
@@ -54,9 +55,12 @@ def handle_tldr(message):
         if not rate_limiter.allow("chat", message.from_user.id)[0]:
             _safe_reply_to(bot, message, "درخواست‌های شما بیش از حد مجاز است. کمی صبر کنید.")
             return
+
+        if not ps.feature_gate_message(bot, message, "tldr", explicit=True):
+            return
         if _tldr_on_cooldown(chat_id_str):
             _safe_reply_to(bot, message,
-                f"⏳ یه خلاصه همین الانا گرفتن — {int(TLDR_COOLDOWN_SECONDS // 60)} دقیقه دیگه دوباره امتحان کن.")
+                f"⏳ یه خلاصه همین الانا گرفتن — {int(_tldr_cooldown_seconds() // 60)} دقیقه دیگه دوباره امتحان کن.")
             return
 
         placeholder = _safe_reply_to(bot, message, "🔍 در حال بررسی پرونده‌ی گفتگوها...")

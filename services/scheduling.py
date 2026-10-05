@@ -11,6 +11,12 @@ from bots import admin_notifier, bot
 from config import MAX_DISPATCH_RETRIES, SCHEDULER_MAX_WORKERS
 from db import _build_all_members_mention, repo
 from metrics import METRICS
+from services.panel_jobs import (
+    job_mark_error,
+    job_mark_start,
+    job_mark_success,
+    job_paused_until,
+)
 from services.streaming import escape_markdown
 from timeutil import _parse_custom_interval_seconds
 
@@ -95,6 +101,21 @@ def _build_reminder_alarm(rid, chat_id, creator_id, text, mention_type, assignee
     )
     return alarm_text, markup
 
+def _creator_banned_private(creator_id, chat_id):
+    """True if the row belongs to the creator's own private chat AND the
+    creator is currently banned. Group rows are never held (a ban pauses
+    interaction with the person, not deliveries the group expects). Cached
+    set, no DB reads warm; fail open."""
+    try:
+        if str(chat_id) != str(int(creator_id)):
+            return False
+        from handlers.shared import get_cached_ban_ids
+
+        return int(creator_id) in get_cached_ban_ids()
+    except Exception:
+        return False
+
+
 def _fire_reminder(rid, expected_trigger):
     """Dispatched on the scheduler thread pool. Claim-token flow: re-read
     the fresh row (dismissed/snoozed meanwhile -> release + skip), send,
@@ -109,6 +130,12 @@ def _fire_reminder(rid, expected_trigger):
     if fstatus != 0 or float(ftrigger) != float(expected_trigger):
         repo.release_reminder_claim(rid)
         return  # snoozed/rescheduled/finalized concurrently
+    if _creator_banned_private(fcreator, fchat):
+        # Banned after claiming (the claim filter normally excludes them, so
+        # this is a rare race): release quietly — no send, no attempt count,
+        # no alert. The row stays due and fires after unban.
+        repo.release_reminder_claim(rid)
+        return
     try:
         alarm_text, markup = _build_reminder_alarm(rid, fchat, fcreator, ftext, fmention, fassuser)
         bot.send_message(int(fchat), alarm_text, parse_mode="Markdown", reply_markup=markup)
@@ -168,6 +195,9 @@ def _fire_todo_expiry(tid, expected_deadline):
     if fstatus != 0 or fdeadline is None or float(fdeadline) != float(expected_deadline):
         repo.release_todo_claim(tid)
         return  # done/edited/finalized concurrently
+    if _creator_banned_private(fcreator, fchat):
+        repo.release_todo_claim(tid)
+        return  # banned after claiming: hold silently, fires after unban
     try:
         assignee_str = f"\n👥 مسئول: @{fassuser}" if fassuser else ""
         alert_text = (
@@ -244,12 +274,20 @@ def _reminder_scheduler_loop():
         log.error("Scheduler catch-up pass failed", exc_info=True)
 
     while True:
+        job_mark_start("scheduler")
+        paused, _label = job_paused_until("scheduler")
+        if paused:
+            # Held: rows stay unclaimed (no spin, no alerts) and fire late —
+            # oldest-due-first — on resume. In-flight pool work is untouched.
+            time.sleep(60)
+            continue
         try:
             token = uuid.uuid4().hex
             for rid, expected in repo.claim_due_reminders(time.time(), token, CLAIM_STALE_SECONDS):
                 _scheduler_executor.submit(_fire_reminder, rid, expected)
         except Exception:
             log.error("Reminder polling error", exc_info=True)
+            job_mark_error("scheduler", traceback.format_exc(limit=3))
             admin_notifier.notify("scheduler_reminder_poll", traceback.format_exc(limit=5))
 
         try:
@@ -258,6 +296,8 @@ def _reminder_scheduler_loop():
                 _scheduler_executor.submit(_fire_todo_expiry, tid, expected)
         except Exception:
             log.error("Todo deadline polling error", exc_info=True)
+            job_mark_error("scheduler", traceback.format_exc(limit=3))
             admin_notifier.notify("scheduler_todo_poll", traceback.format_exc(limit=5))
 
+        job_mark_success("scheduler")
         time.sleep(15)

@@ -82,7 +82,8 @@ def _register_active_request(chat_id, user_id, placeholder_id):
     now pass the returned entry through to stream_to_telegram_generic /
     _consume_active_request so cancellation always targets the right run."""
     key = (int(chat_id), int(user_id))
-    entry = {"cancel": False, "placeholder_id": int(placeholder_id), "_key": key}
+    entry = {"cancel": False, "placeholder_id": int(placeholder_id), "_key": key,
+             "born": time.time()}  # turn start: post-reset resurrection guard
     with _active_requests_lock:
         _active_requests[key] = entry
         _all_inflight_ids.add(id(entry))
@@ -97,6 +98,24 @@ def _cancel_active_request(chat_id, user_id):
         entry["cancel"] = True
         return entry.get("placeholder_id")
     return None
+
+def drop_user_requests(user_id):
+    """Cancel + remove every in-flight /stop entry of this user (Stage 2C
+    reset). Streams observe the cancel flag at the next chunk; the registry
+    is clean immediately. Never raises."""
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return
+    try:
+        with _active_requests_lock:
+            for key in [k for k in _active_requests if k[1] == uid]:
+                entry = _active_requests.pop(key)
+                entry["cancel"] = True
+                _all_inflight_ids.discard(id(entry))
+    except Exception:
+        log.warning("drop_user_requests failed", exc_info=True)
+
 
 def _consume_active_request(entry):
     """Consume a specific request entry (the one returned by

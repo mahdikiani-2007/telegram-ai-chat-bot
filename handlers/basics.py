@@ -15,6 +15,7 @@ from handlers.shared import (
 from infra import HTTP
 from limits import rate_limiter
 from metrics import METRICS
+from services import panel_settings as ps
 from services.streaming import (
     _handle_stop_generic,
     _safe_reply_to,
@@ -86,6 +87,9 @@ def handle_image_generation(message):
             return
 
         if not rate_limited_reply(message, "pic"):
+            return
+
+        if not ps.feature_gate_message(bot, message, "pic", explicit=True):
             return
 
         prompt = command_parts[1].strip()
