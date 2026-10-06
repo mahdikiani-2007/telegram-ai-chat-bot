@@ -1256,7 +1256,10 @@ def test_tavily_zero_rejected_and_falls_back():
         ps.clear_settings_cache()
     for key, (_label, _dflt, mn, _mx) in ps.SETTINGS_SPEC.items():
         if mn <= 0:
-            assert key == "tldr.cooldown_sec", key
+            # tldr.cooldown 0 = documented off-switch; digest.search_reserve
+            # 0 = no reserve (budget gate itself still applies). Neither
+            # bypasses a hard cap the way tavily 0 (= uncapped) would.
+            assert key in ("tldr.cooldown_sec", "digest.search_reserve"), key
     assert ps.validate_setting_value("tldr.cooldown_sec", "0") == (True, 0)
 
 

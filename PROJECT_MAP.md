@@ -1,6 +1,6 @@
 > This file is the authoritative map of the codebase. Read it BEFORE exploring code. Keep it updated after EVERY code change.
 
-`Last verified:` 2026-10-05 — ported to repository root from `refactored/` layout (panel stages 1–3B); all referenced paths verified at root.
+`Last verified:` 2026-10-06 — digest topics Stage A (per-group modes, profiles backend, ledger, budget gate).
 
 Detail files (read when the summary below is not enough): `docs/map/modules.md` (per-file API), `docs/map/data.md` (tables + session/FSM state), `docs/map/integrations.md` (external APIs + quirks), `docs/map/config.md` (every env var + message/keyboard locations).
 
@@ -61,7 +61,7 @@ Telebot **first-match-wins**; `wiring.register_all()` fixes the order: `handlers
 | `/relay` (+ `help/status/on/off/target/threads/thread/test/verify/resume`) | `commands=[relay]`, admin-only | `ig_relay.py` | `_handle_relay_command` → `handle_command` | Own `ig_relay_config/seen` tables; poll thread |
 | `/admin` panel home (+ `pnl_home/status/maint(_cf/_apply)/admins/add/del/del_ok/cancel/audit/bcast`) | `commands=[admin]` + `pnl_` callbacks, any-admin (Admins + Broadcast buttons owner-only), private-only, silent otherwise | `handlers/panel.py` | `handle_admin_panel`, `panel_guard`, `check_panel_access` (in `services/panel_settings.py`) | Single message edited in place; typed admin-ID input via `_panel_input_sessions`; mutating actions audited |
 | Users (`pnl_users_*/user_*/upick_*/user_search`) | callbacks + typed search, any-admin, private-only | `handlers/panel.py` | `handle_panel_users/user/pick`, `handle_panel_user_search` | 10/page, counts/metadata only, pick-from-results (never first-match); Ban/Unban confirm-gated, admins/self protected |
-| Groups (`pnl_groups_*/group_*/gpick_*/group_search`) + Leave (owner-only) + per-group debate toggle | callbacks + typed search | `handlers/panel.py` | `handle_panel_groups/group/pick`, `handle_panel_leave[_ok]`, `handle_panel_group_debate` | 10/page, top-10 observed members inline; leave via `bot.leave_chat`, confirm-gated, audited |
+| Groups (`pnl_groups_*/group_*/gpick_*/group_search`) + Leave (owner-only) + per-group debate toggle + digest mode switch | callbacks + typed search | `handlers/panel.py` | `handle_panel_groups/group/pick`, `handle_panel_leave[_ok]`, `handle_panel_group_debate`, `handle_panel_group_digest_mode` | 10/page, top-10 observed members inline; leave via `bot.leave_chat`, confirm-gated, audited; digest Standard/Off flip (any admin, audited; profiles in Stage B) |
 | Features (`pnl_features/feat_*`) + Settings (`pnl_settings/set_*/setdef_*/limits/limadd/limdel_*`) | callbacks + typed input, any-admin | `handlers/panel.py` + `services/panel_settings.py` | `handle_panel_features/flip`, `handle_panel_settings/detail/reset`, `handle_panel_limits/add/del`, `feature_enabled()`, `setting_value()` | 11 global toggles (admins exempt, fail open); 7 clamped settings + per-user rate overrides (one cached query), old→new audited |
 | Reset user data (`pnl_reset_*/reset_ok_*`) | callbacks, owner-only, private-only | `handlers/panel.py` + `db.reset_user_data()` | `handle_panel_reset[_ok]` | Count-first confirm; one transaction + rollback; group history/summaries/tasks kept; bans/audit/admins kept; in-memory state cleared; post-reset writes tombstoned |
 | Jobs (`pnl_jobs/jp_*/jr_*/jrun*`) + Stats (`pnl_stats`) | Jobs view any-admin, pause/run owner-only; Stats any-admin view-only | `handlers/panel.py` + `services/panel_jobs.py` | `handle_panel_jobs/pause/resume/backup_run[_ok]`, `handle_panel_stats`, `job_snapshot()`, `job_pause/resume()` | Pause = `job.<name>.paused_until` (cached, fail open; sched/backup ≤24h, relay/profiler indefinite); backup run-now = snapshot+send only, single-flight; stats = METRICS + Iran-day buckets (60s cache) |
@@ -99,7 +99,7 @@ Telebot **first-match-wins**; `wiring.register_all()` fixes the order: `handlers
 | `/forget <n\|all>` | `commands=[forget]` | `handlers/memory_cmds.py` | `handle_forget` | Single-fact or full wipe |
 | Main chat (text/photo) | `content_types=[text, photo]` catch-all | `handlers/chat.py` | `handle_all_messages` | Full pipeline (§4); Light mirror `handle_light_messages` (text-only, memory `light_<chat>`) + `handle_start_light` |
 | Reminder/todo firing | scheduler claim batches (not Telegram updates) | `services/scheduling.py` | `_fire_reminder`, `_fire_todo_expiry` | Alarm + snooze/dismiss buttons; recurrence roll-forward |
-| Daily digest | scheduler / `/digest` (owner-only) | `services/digest.py` | `broadcast_daily_digest` | 2 sections → all known groups; repeat-guard via `digest_history` |
+| Daily digest | scheduler / `/digest` (owner-only) / panel send-now | `services/digest.py` | `run_digest_cycle()`, `broadcast_daily_digest()`, `deliver_to_group()` | Per-group modes (standard/off/profile) + one build per profile + budget gate + delivery ledger + unreachable marking; five-way counts; per-profile repeat guard |
 | Daily backup | scheduler 04:00 Iran | `services/backup.py` | `send_daily_backup` | Purge + VACUUM → gzip snapshot → admin DM + rotation |
 
 ## 12. Background jobs, schedulers, error handling

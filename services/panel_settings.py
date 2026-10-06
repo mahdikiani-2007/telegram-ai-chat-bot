@@ -203,6 +203,8 @@ SETTINGS_SPEC = {
     "tavily.max_results": ("Tavily max results", 5, 1, 10),
     "debate.delay_sec": ("Debate delay (s)", 4, 1, 60),
     "debate.max_rounds": ("Debate max rounds", 50, 1, 200),
+    "digest.search_reserve": ("Digest search reserve", 10, 0, 20),
+    "digest.max_profiles": ("Digest max profiles", 5, 1, 20),
 }
 
 # Per-user rate overrides live under limit.<uid>.<cat> keys; loaded as ONE
@@ -485,6 +487,40 @@ def save_memory_guarded(memory_id, role, text, sender_uid=None, born=None):
     except Exception:
         log.warning("guarded save failed", exc_info=True)
         return False
+# =========================
+# Digest mode cache (one query, 10s TTL, fail open to all-standard).
+# Consulted only in the digest path — never per user message.
+# =========================
+_DIGEST_MODES_TTL = 10.0
+
+_digest_modes_snapshot = ({}, 0.0)
+_digest_modes_lock = threading.Lock()
+
+
+def get_digest_modes():
+    """{chat_id: (mode, profile_id)}. Absent chat = standard."""
+    global _digest_modes_snapshot
+    now = time.time()
+    with _digest_modes_lock:
+        snapshot, expires = _digest_modes_snapshot
+        if now < expires:
+            return snapshot
+    try:
+        fresh = repo.get_digest_modes()
+    except Exception:
+        log.warning("digest modes read failed; all-standard fallback", exc_info=True)
+        with _digest_modes_lock:
+            old, _exp = _digest_modes_snapshot
+            return old
+    with _digest_modes_lock:
+        _digest_modes_snapshot = (fresh, now + _DIGEST_MODES_TTL)
+    return fresh
+
+
+def invalidate_digest_modes():
+    global _digest_modes_snapshot
+    with _digest_modes_lock:
+        _digest_modes_snapshot = ({}, 0.0)
 # =========================
 # Audit log (best-effort: never breaks the action it records)
 # =========================

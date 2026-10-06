@@ -887,9 +887,49 @@ def handle_panel_group_show(call, cid):
     rows.append((_btn(
         f"{'🔴' if debate_on else '🟢'} Debate: {'ON' if debate_on else 'OFF'}",
         f"pnl_gdebate_{cid}"),))
+    try:
+        from services.panel_settings import get_digest_modes
+
+        mode = get_digest_modes().get(str(cid), ("standard", None))[0]
+    except Exception:
+        mode = "standard"
+    rows.append((_btn(
+        f"📰 Digest: {'OFF' if mode == 'off' else 'ON'}",
+        f"pnl_dgmode_{cid}"),))
     if is_owner(call.from_user.id):
         rows.append((_btn("🚪 Leave chat", f"pnl_leave_{cid}"),))
     _edit_panel(call, text, _nav_markup(rows, back="pnl_groups_0"))
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("pnl_dgmode_"))
+@panel_guard(owner_only=False)
+def handle_panel_group_digest_mode(call):
+    """Stage A minimal digest switch: Standard <-> Off only (profile
+    assignment UI arrives in Stage B). Any admin may flip; audited."""
+    try:
+        cid = int(call.data[len("pnl_dgmode_"):])
+    except (TypeError, ValueError):
+        try:
+            bot.answer_callback_query(call.id, "❌ Bad button payload.")
+        except Exception:
+            pass
+        return
+    try:
+        from services.panel_settings import get_digest_modes
+
+        old = get_digest_modes().get(str(cid), ("standard", None))[0]
+    except Exception:
+        old = "standard"
+    new = "off" if old != "off" else "standard"
+    try:
+        repo.set_digest_mode(cid, new, None, call.from_user.id)
+        ps.invalidate_digest_modes()
+    except Exception:
+        log.error("panel digest mode flip failed", exc_info=True)
+        _edit_panel(call, "❌ DB error.", _nav_markup(back="pnl_groups_0"))
+        return
+    ps.audit(call.from_user.id, "digest_mode", str(cid), f"{old} -> {new}")
+    handle_panel_group_show(call, cid)
 
 
 @bot.callback_query_handler(func=lambda c: c.data == "pnl_group_search")

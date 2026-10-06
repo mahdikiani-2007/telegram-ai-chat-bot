@@ -59,11 +59,10 @@ def handle_stats(message):
 
 @bot.message_handler(commands=["digest"])
 def handle_digest_command(message):
-    """Admin-only, private-chat-only: build today's digest right now and
-    push it to every known group immediately, instead of waiting for the
-    scheduled DIGEST_HOUR_IRAN run. Restricted to private chat so this
-    can't be triggered (and re-broadcast to every group) by anyone typing
-    /digest inside a group the bot is in."""
+    """Owner-only, private-chat-only: run today's digest cycle right now
+    (modes, ledger, budget — same path as the scheduler). Restricted to
+    private chat so this can't be triggered (and re-broadcast to every
+    group) by anyone typing /digest inside a group the bot is in."""
     try:
         if not is_owner(message.from_user.id):
             _safe_reply_to(bot, message, "⛔ You are not authorized to use this command.")
@@ -72,10 +71,13 @@ def handle_digest_command(message):
             _safe_reply_to(bot, message, "این دستور فقط داخل پیوی با ادمین کار می‌کند.")
             return
 
-        _safe_reply_to(bot, message, "⏳ در حال ساخت و ارسال دایجست...")
-        sent, failed, digest_text = broadcast_daily_digest(triggered_by=f"manual:{message.from_user.id}")
+        from services.digest import run_digest_cycle
 
-        if not digest_text:
+        _safe_reply_to(bot, message, "⏳ در حال ساخت و ارسال دایجست...")
+        report = run_digest_cycle(triggered_by=f"manual:{message.from_user.id}")
+
+        std_text = report["texts"].get("standard", "")
+        if not std_text and not report["sent"]:
             bot.send_message(
                 message.chat.id,
                 "❌ نتونستم دایجست بسازم — یا `TAVILY_API_KEY` ست نیست، یا سقف روزانه‌ی سرچ تموم شده، "
@@ -83,13 +85,21 @@ def handle_digest_command(message):
             )
             return
 
-        report = (
-            f"✅ دایجست ساخته و ارسال شد.\n\n"
-            f"📤 ارسال موفق: {sent}\n"
-            f"❌ ارسال ناموفق: {failed}\n\n"
-            f"---\n\n{digest_text}"
+        est, consumed = report["estimate"], report["consumed"]
+        est_line = f"تخمین: {est['standard']} + {sum(est['profiles'].values())} سرچ"
+        use_line = (f"مصرف: قبل {consumed['before']} → بعد {consumed['after']}"
+                    if consumed["before"] is not None else "مصرف: بدون سقف")
+        text = (
+            f"✅ دایجست اجرا شد.\n\n"
+            f"📤 ارسال موفق: {report['sent']}\n"
+            f"❌ ناموفق: {report['failed']}\n"
+            f"🚫 غیرقابل دسترس: {report['unreachable']}\n"
+            f"⏭ خاموش: {report['skipped_off']}, بودجه: {report['skipped_budget']}, "
+            f"بی‌نتیجه: {report['skipped_no_results']}\n"
+            f"🔎 {est_line} | {use_line}\n\n"
+            f"---\n\n{std_text}"
         )
-        bot.send_message(message.chat.id, report[:4000], parse_mode="Markdown")
+        bot.send_message(message.chat.id, text[:4000], parse_mode="Markdown")
     except Exception:
         log.error("DIGEST COMMAND ERROR", exc_info=True)
         admin_notifier.notify("digest_command_error", traceback.format_exc(limit=5))
