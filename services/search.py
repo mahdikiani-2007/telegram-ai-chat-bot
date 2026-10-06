@@ -38,6 +38,18 @@ class DailyBudget:
         with self._lock:
             self._limit = max(0, int(daily_limit))
 
+    def remaining(self):
+        """Searches left today, or None when uncapped. Read-only snapshot."""
+        try:
+            with self._lock:
+                if self._limit <= 0:
+                    return None
+                today = datetime.datetime.now(tz=UTC_TZ).date()
+                used = self._count if self._day == today else 0
+                return max(0, int(self._limit) - int(used))
+        except Exception:
+            return 0
+
     def try_consume(self):
         if self._limit <= 0:
             return True  # 0 or negative in env = no cap configured

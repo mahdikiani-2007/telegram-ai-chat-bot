@@ -874,6 +874,7 @@
   "bot.callback_query_handler:handle_panel_groups::pnl_groups_:",
   "bot.callback_query_handler:handle_panel_group_pick::pnl_gpick_:",
   "bot.callback_query_handler:handle_panel_group::pnl_group_:",
+  "bot.callback_query_handler:handle_panel_group_digest_mode::pnl_dgmode_:",
   "bot.callback_query_handler:handle_panel_group_search:::",
   "bot.callback_query_handler:handle_panel_leave::pnl_leave_:",
   "bot.callback_query_handler:handle_panel_leave_ok::pnl_leave_ok_:",

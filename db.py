@@ -323,6 +323,51 @@ class ChatRepository:
                 CREATE INDEX IF NOT EXISTS idx_panel_broadcasts_status
                 ON panel_broadcasts(status)
             """)
+            # ---- Digest topics (per-group modes, profiles, ledger) ----
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS digest_group_config (
+                    chat_id TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL DEFAULT 'standard',
+                    profile_id INTEGER,
+                    updated_by INTEGER NOT NULL DEFAULT 0,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS digest_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    created_by INTEGER NOT NULL DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    previewed_at DATETIME
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS digest_deliveries (
+                    chat_id TEXT NOT NULL,
+                    digest_date TEXT NOT NULL,
+                    profile_key TEXT NOT NULL DEFAULT 'standard',
+                    status TEXT NOT NULL DEFAULT 'sent',
+                    error TEXT NOT NULL DEFAULT '',
+                    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, digest_date)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS digest_unreachable (
+                    chat_id TEXT PRIMARY KEY,
+                    consec_failures INTEGER NOT NULL DEFAULT 0,
+                    last_failure_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            for ddl in (
+                "ALTER TABLE digest_history ADD COLUMN profile_key TEXT NOT NULL DEFAULT 'standard'",
+            ):
+                try:
+                    conn.execute(ddl)
+                except Exception:
+                    pass  # column already exists
             conn.commit()
 
     # ---- writes ----
@@ -1027,7 +1072,7 @@ class ChatRepository:
         ).fetchone() is not None
 
     # ---- Digest memory (repeat-news guard) ----
-    def save_digest_lines(self, digest_date, lines):
+    def save_digest_lines(self, digest_date, lines, profile_key="standard"):
         """Record this run's digest bullet lines. `digest_date` is an ISO
         'YYYY-MM-DD' string (Iran local)."""
         if not lines:
@@ -1035,8 +1080,8 @@ class ChatRepository:
         with self._write_lock:
             conn = self._connect()
             conn.executemany(
-                "INSERT INTO digest_history (digest_date, line) VALUES (?, ?)",
-                [(str(digest_date), ln) for ln in lines],
+                "INSERT INTO digest_history (digest_date, profile_key, line) VALUES (?, ?, ?)",
+                [(str(digest_date), str(profile_key or "standard"), ln) for ln in lines],
             )
             # GC: keep only the last DIGEST_MEMORY_DAYS worth of rows.
             conn.execute(
@@ -1045,21 +1090,207 @@ class ChatRepository:
             )
             conn.commit()
 
-    def get_recent_digest_lines(self, exclude_date=None):
-        """All headline lines recorded in the last DIGEST_MEMORY_DAYS,
-        oldest first, optionally excluding one day (so today's own lines
-        don't leak into the prompt on a same-day manual re-run)."""
+    def get_recent_digest_lines(self, exclude_date=None, profile_key="standard"):
+        """Headline lines of the last DIGEST_MEMORY_DAYS for one profile
+        key, oldest first, optionally excluding one day."""
         conn = self._connect()
+        key = str(profile_key or "standard")
         if exclude_date:
             rows = conn.execute(
-                "SELECT line FROM digest_history WHERE digest_date != ? ORDER BY id ASC",
-                (str(exclude_date),),
+                "SELECT line FROM digest_history WHERE profile_key = ? AND digest_date != ? "
+                "ORDER BY id ASC",
+                (key, str(exclude_date)),
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT line FROM digest_history ORDER BY id ASC"
+                "SELECT line FROM digest_history WHERE profile_key = ? ORDER BY id ASC",
+                (key,),
             ).fetchall()
         return [r[0] for r in rows]
+
+    # =========================
+    # Digest topics: modes, profiles, ledger, unreachable
+    # =========================
+    def get_digest_modes(self):
+        """{chat_id: (mode, profile_id)} in ONE query. Absent = standard."""
+        conn = self._connect()
+        return {r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT chat_id, mode, profile_id FROM digest_group_config").fetchall()}
+
+    def set_digest_mode(self, chat_id, mode, profile_id, updated_by):
+        """mode in standard/off/profile; profile mode requires an existing
+        previewed profile (enforced here so no caller can bypass it)."""
+        mode = str(mode)
+        if mode not in ("standard", "off", "profile"):
+            raise ValueError(f"bad digest mode: {mode!r}")
+        pid = None
+        if mode == "profile":
+            try:
+                pid = int(profile_id)
+            except (TypeError, ValueError):
+                raise ValueError("profile mode needs a profile id")
+            with self._write_lock:
+                conn = self._connect()
+                row = conn.execute(
+                    "SELECT previewed_at FROM digest_profiles WHERE id = ?", (pid,)).fetchone()
+                if not row or not row[0]:
+                    raise ValueError("profile has no successful preview yet")
+                conn.execute(
+                    "INSERT INTO digest_group_config (chat_id, mode, profile_id, updated_by, updated_at) "
+                    "VALUES (?, 'profile', ?, ?, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(chat_id) DO UPDATE SET mode='profile', profile_id=excluded.profile_id, "
+                    "updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP",
+                    (str(chat_id), pid, int(updated_by)),
+                )
+                conn.commit()
+            return
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO digest_group_config (chat_id, mode, profile_id, updated_by, updated_at) "
+                "VALUES (?, ?, NULL, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(chat_id) DO UPDATE SET mode=excluded.mode, profile_id=NULL, "
+                "updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP",
+                (str(chat_id), mode, int(updated_by)),
+            )
+            conn.commit()
+
+    def create_digest_profile(self, name, topic, created_by):
+        name, topic = str(name or "").strip()[:60], str(topic or "").strip()[:200]
+        if not name or not topic:
+            raise ValueError("profile name and topic are required")
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "INSERT INTO digest_profiles (name, topic, created_by) VALUES (?, ?, ?)",
+                (name, topic, int(created_by)),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def list_digest_profiles(self):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT id, name, topic, created_by, created_at, previewed_at "
+            "FROM digest_profiles ORDER BY id ASC").fetchall()
+
+    def get_digest_profile(self, profile_id):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT id, name, topic, created_by, created_at, previewed_at "
+            "FROM digest_profiles WHERE id = ?", (int(profile_id),)).fetchone()
+
+    def count_digest_profiles(self):
+        conn = self._connect()
+        return conn.execute("SELECT COUNT(*) FROM digest_profiles").fetchone()[0]
+
+    def update_digest_profile_topic(self, profile_id, topic):
+        """New topic + preview reset (must re-preview before assignment)."""
+        topic = str(topic or "").strip()[:200]
+        if not topic:
+            raise ValueError("topic is required")
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "UPDATE digest_profiles SET topic = ?, previewed_at = NULL WHERE id = ?",
+                (topic, int(profile_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def mark_digest_profile_previewed(self, profile_id):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE digest_profiles SET previewed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (int(profile_id),),
+            )
+            conn.commit()
+
+    def delete_digest_profile(self, profile_id):
+        """Delete profile; groups on it fall back to standard. Returns the
+        number of affected groups."""
+        with self._write_lock:
+            conn = self._connect()
+            rows = conn.execute(
+                "SELECT chat_id FROM digest_group_config WHERE mode = 'profile' AND profile_id = ?",
+                (int(profile_id),)).fetchall()
+            conn.execute(
+                "UPDATE digest_group_config SET mode = 'standard', profile_id = NULL "
+                "WHERE mode = 'profile' AND profile_id = ?", (int(profile_id),))
+            conn.execute("DELETE FROM digest_profiles WHERE id = ?", (int(profile_id),))
+            conn.commit()
+            return [r[0] for r in rows]
+
+    def record_digest_delivery(self, chat_id, digest_date, profile_key, status, error=""):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO digest_deliveries (chat_id, digest_date, profile_key, status, error) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(chat_id, digest_date) DO UPDATE SET profile_key=excluded.profile_key, "
+                "status=excluded.status, error=excluded.error, sent_at=CURRENT_TIMESTAMP",
+                (str(chat_id), str(digest_date), str(profile_key or "standard"),
+                 str(status)[:20], str(error or "")[:200]),
+            )
+            conn.commit()
+
+    def record_digest_skip(self, chat_id, digest_date, profile_key, status):
+        """Informational skip row (off/budget/no-results/unreachable-hold):
+        INSERT-only, never overwrites an existing sent/failed row, so a
+        later mode flip or hold can never erase delivery history."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT OR IGNORE INTO digest_deliveries (chat_id, digest_date, profile_key, status, error) "
+                "VALUES (?, ?, ?, ?, '')",
+                (str(chat_id), str(digest_date), str(profile_key or "standard"),
+                 str(status)[:20]),
+            )
+            conn.commit()
+
+    def get_digest_delivery(self, chat_id, digest_date):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT profile_key, status, error, sent_at FROM digest_deliveries "
+            "WHERE chat_id = ? AND digest_date = ?",
+            (str(chat_id), str(digest_date))).fetchone()
+
+    def deliveries_for_date(self, digest_date):
+        conn = self._connect()
+        return {r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT chat_id, profile_key, status FROM digest_deliveries WHERE digest_date = ?",
+            (str(digest_date),)).fetchall()}
+
+    def note_digest_unreachable(self, chat_id):
+        """Bump consecutive-failure counter. Returns the new count."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO digest_unreachable (chat_id, consec_failures, last_failure_at) "
+                "VALUES (?, 1, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(chat_id) DO UPDATE SET consec_failures = consec_failures + 1, "
+                "last_failure_at = CURRENT_TIMESTAMP",
+                (str(chat_id),),
+            )
+            row = conn.execute(
+                "SELECT consec_failures FROM digest_unreachable WHERE chat_id = ?",
+                (str(chat_id),)).fetchone()
+            conn.commit()
+            return int(row[0]) if row else 0
+
+    def clear_digest_unreachable(self, chat_id):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("DELETE FROM digest_unreachable WHERE chat_id = ?", (str(chat_id),))
+            conn.commit()
+
+    def get_digest_unreachable(self, chat_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT consec_failures, last_failure_at FROM digest_unreachable WHERE chat_id = ?",
+            (str(chat_id),)).fetchone()
+        return (int(row[0]), str(row[1])) if row else (0, "")
 
     # ---- Per-user long-term facts (portable memory, chat-scoped) ----
     def add_user_facts(self, user_id, facts, source_chat_id="", visibility="private",

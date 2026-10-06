@@ -20,7 +20,11 @@
 | `bot_media_messages` | `(chat_id, message_id) PK, kind, created_at` (GC'd >60d by session-GC loop) | IG/YT senders + ig_relay (`mark_bot_media_message`) | chat handlers skip AI reply when replying to re-uploaded media |
 | `sessions` | `(session_id, user_id) PK, title, created_at` (private chats; max 20/user) | `/new`, lazy auto-create on first DM | `/session` list/switch/rename/delete |
 | `user_active_sessions` | `user_id PK, active_session_id NULL` (NULL = legacy plain-`uid` memory) | `create_session/set_active_session`, cleared on delete | `_resolve_private_session` per DM |
-| `digest_history` | `id, digest_date (Iran YYYY-MM-DD), line` (7-day rolling) | `save_digest_lines` after each successful build | repeat-guard injected into writeup prompt |
+| `digest_history` | `id, digest_date (Iran YYYY-MM-DD), profile_key ('standard' default), line` (7-day rolling) | `save_digest_lines` after each successful build (per key) | repeat-guard injected into writeup prompt (per key) |
+| `digest_group_config` | `chat_id PK, mode standard/off/profile, profile_id NULL, updated_by, updated_at` (no row = standard) | panel group switch | mode lookup per digest run (cached) |
+| `digest_profiles` | `id, name, topic ≤200, created_by, created_at, previewed_at NULL` | panel profiles UI (Stage B) | profile builds; assignment requires previewed |
+| `digest_deliveries` | `(chat_id, digest_date) PK, profile_key, status, error, sent_at` | every digest send path | no-double-send; panel last-result |
+| `digest_unreachable` | `chat_id PK, consec_failures, last_failure_at` (≥3 held; cleared on success or newer last_seen) | send-failure classifier | skip logic |
 | `user_facts` | `(user_id, fact) PK, source_chat_id, visibility (private/group), created_at` (cap 50/user) | fact extractor + behavior profiler (`add_user_facts`) | `_inject_user_profile` (scoped), `/myfacts`, `/forget` |
 | `behavior_stats` | `(chat_id, user_id, stat_date) PK, msg_count, total_chars, reply/link/question/media counts, sample_lines (≤6×80ch), last_hour` (kept ~3d) | middleware (`record_behavior`, groups, zero-LLM) | nightly behavior profiler |
 | `chat_log` | `chat_id, user_id, first_name, text (≤1000ch), ts` (purged >48h by session-GC loop; buffer for profiler + `/tldr`) | middleware (`log_group_chat`; bots/commands excluded) | `/tldr`, behavior profiler transcript |
