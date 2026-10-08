@@ -29,7 +29,7 @@
 | `behavior_stats` | `(chat_id, user_id, stat_date) PK, msg_count, total_chars, reply/link/question/media counts, sample_lines (≤6×80ch), last_hour` (kept ~3d) | middleware (`record_behavior`, groups, zero-LLM) | nightly behavior profiler |
 | `chat_log` | `chat_id, user_id, first_name, text (≤1000ch), ts` (purged >48h by session-GC loop; buffer for profiler + `/tldr`) | middleware (`log_group_chat`; bots/commands excluded) | `/tldr`, behavior profiler transcript |
 | `maintenance_meta` | `key PK, value` (e.g. `last_vacuum`) | `set_maintenance_value` | `maybe_vacuum` gating |
-| `panel_settings` | `key PK, value` (toggles, numeric overrides, maintenance + notice keys) | panel (`set_setting`), Stage 2+ writers | `get_setting` (10s cached) |
+| `panel_settings` | `key PK, value` (toggles, numeric overrides, maintenance + notice keys; digest reserve/max profiles/preview allowance) | panel (`set_setting`), Stage 2+ writers | `get_setting` (10s cached) |
 | `panel_admins` | `user_id PK, added_by, added_at` (DB-managed admins; owner/env IDs never stored here) | owner via panel | `is_panel_admin` ← `is_admin()` |
 | `panel_bans` | `user_id PK, reason, banned_by, created_at` (app-level bans; admins exempt) | panel Stage 2 | central gate `is_banned()` |
 | `panel_audit` | `id, admin_id, action, target, result, created_at` (pruned to newest 2000 on write) | `write_panel_audit` ← panel mutating actions | panel Audit viewer |

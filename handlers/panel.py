@@ -174,6 +174,7 @@ def handle_admin_panel(message):
     rows = [
         (_btn("📊 Status", "pnl_status"), _btn("🚧 Maintenance", "pnl_maint")),
         (_btn("👥 Users", "pnl_users_0"), _btn("💬 Groups", "pnl_groups_0")),
+        (_btn("📰 Digest", "pnl_digest"),),
         (_btn("🎛 Features", "pnl_features"), _btn("⚙ Settings", "pnl_settings")),
         (_btn("⏰ Jobs", "pnl_jobs"), _btn("📈 Stats", "pnl_stats")),
         (_btn("📜 Audit log", "pnl_audit_0"),),
@@ -201,6 +202,7 @@ def handle_panel_home(call):
     rows = [
         (_btn("📊 Status", "pnl_status"), _btn("🚧 Maintenance", "pnl_maint")),
         (_btn("👥 Users", "pnl_users_0"), _btn("💬 Groups", "pnl_groups_0")),
+        (_btn("📰 Digest", "pnl_digest"),),
         (_btn("🎛 Features", "pnl_features"), _btn("⚙ Settings", "pnl_settings")),
         (_btn("⏰ Jobs", "pnl_jobs"), _btn("📈 Stats", "pnl_stats")),
         (_btn("📜 Audit log", "pnl_audit_0"),),
@@ -781,6 +783,174 @@ def _handle_user_search_text(message):
         lines.append(f"• {_txt(label, 40)} — `{uid}`")
         markup.add(_btn(_txt(label, 28), f"pnl_upick_{uid}"))
     bot.send_message(message.chat.id, "\n".join(lines), parse_mode="Markdown", reply_markup=markup)
+
+
+# ---------- Digest overview + groups ----------
+def _digest_today():
+    return __import__("timeutil").format_trigger_time_iran(time.time()).split(" ")[0]
+
+
+def _digest_overview_text():
+    snap = __import__("services.digest", fromlist=["digest_run_snapshot"]).digest_run_snapshot()
+    report = snap.get("report") or {}
+    try:
+        from services.search import tavily_budget
+        remaining = tavily_budget.remaining()
+        limit = TAVILY_DAILY_LIMIT
+        used = "uncapped" if remaining is None else max(0, int(limit) - int(remaining))
+    except Exception:
+        remaining, limit, used = "unknown", "unknown", "unknown"
+    reserve = ps.setting_value("digest.search_reserve")
+    counts = " ".join(
+        f"{key}={int(report.get(key, 0) or 0)}"
+        for key in ("sent", "failed", "unreachable", "skipped_off",
+                    "skipped_budget", "skipped_no_results")
+    )
+    return (
+        "📰 **Digest**\n\n"
+        f"Today: `{_txt(_digest_today())}`\n"
+        f"Tavily: used `{used}` / limit `{limit}` / remaining `{remaining}`\n"
+        f"Reserve: `{reserve}`\n"
+        f"Last run: {counts or 'not run'}\n"
+        f"Run state: `{'running' if snap.get('active') else 'idle'}`"
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "pnl_digest")
+@panel_guard(owner_only=False)
+def handle_panel_digest(call):
+    _edit_panel(
+        call,
+        _digest_overview_text(),
+        _nav_markup([
+            (_btn("💬 Groups", "pnl_dglist_0"),),
+            (_btn("🔄 Refresh", "pnl_digest"),),
+        ]),
+    )
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("pnl_dglist_"))
+@panel_guard(owner_only=False)
+def handle_panel_digest_groups(call):
+    try:
+        page = max(0, int(call.data.rsplit("_", 1)[1]))
+    except (ValueError, IndexError):
+        page = 0
+    offset = page * 10
+    try:
+        rows = repo.list_digest_groups_paged("all", "", 10, offset)
+        total = repo.count_digest_groups("all", "")
+    except Exception:
+        log.error("panel digest groups list failed", exc_info=True)
+        _edit_panel(call, "❌ DB error.", _nav_markup(back="pnl_digest"))
+        return
+    lines = [f"💬 **Digest groups** ({total})\n"]
+    buttons = []
+    for cid, _typ, username, title, _last, mode, pid, status, _error, failures in rows:
+        name = (title or "").strip() or (f"@{username}" if username else str(cid))
+        icon = "⛔" if mode == "off" else ("🟣" if mode == "profile" else "🟢")
+        if failures >= 3:
+            icon = "⚠️"
+        lines.append(f"{icon} {_txt(name, 42)} — `{cid}` {status or 'pending'}")
+        buttons.append((_btn(_txt(name, 28), f"pnl_dggrp_{cid}"),))
+    if total > 10:
+        nav = []
+        if page:
+            nav.append(_btn("◀", f"pnl_dglist_{page - 1}"))
+        if offset + len(rows) < total:
+            nav.append(_btn("▶", f"pnl_dglist_{page + 1}"))
+        if nav:
+            buttons.append(tuple(nav))
+    buttons.append((_btn("🔎 Search", "pnl_dgsearch"),))
+    _edit_panel(call, "\n".join(lines), _nav_markup(buttons, back="pnl_digest"))
+
+
+@bot.callback_query_handler(
+    func=lambda c: c.data and c.data.startswith("pnl_dggrp_")
+    and c.data[len("pnl_dggrp_"):].lstrip("-").isdigit()
+)
+@panel_guard(owner_only=False)
+def handle_panel_digest_group(call):
+    cid = int(call.data[len("pnl_dggrp_"):])
+    known = repo.get_known_chat(str(cid))
+    if not known:
+        _edit_panel(call, "That group is no longer available.", _nav_markup(back="pnl_dglist_0"))
+        return
+    modes = repo.get_digest_modes()
+    mode, pid = modes.get(str(cid), ("standard", None))
+    profile_name = ""
+    if pid:
+        profile = repo.get_digest_profile(pid)
+        profile_name = profile[1] if profile else "deleted"
+    today = _digest_today()
+    delivery = repo.get_digest_delivery(cid, today)
+    status = delivery[1] if delivery else "no ledger row"
+    title = known[3] or known[2] or str(cid)
+    text = (
+        f"💬 **{_txt(title, 60)}**\n\n"
+        f"Mode: `{_txt(mode)}`"
+        + (f" (`{_txt(profile_name, 40)}`)" if pid else "")
+        + f"\nToday's ledger: `{_txt(status)}`"
+    )
+    rows = [
+        (_btn("🟢 Standard", f"pnl_dgset_{cid}_0"), _btn("⛔ Off", f"pnl_dgset_{cid}_1")),
+        (_btn("🟣 Profile", f"pnl_dgprof_{cid}"),),
+    ]
+    _edit_panel(call, text, _nav_markup(rows, back="pnl_dglist_0"))
+
+
+@bot.callback_query_handler(
+    func=lambda c: c.data and c.data.startswith("pnl_dgset_")
+)
+@panel_guard(owner_only=False)
+def handle_panel_digest_group_set(call):
+    parts = call.data.split("_")
+    if len(parts) != 4 or not parts[2].lstrip("-").isdigit() or parts[3] not in ("0", "1"):
+        bot.answer_callback_query(call.id, "❌ Bad button payload.")
+        return
+    cid, mode = int(parts[2]), ("standard" if parts[3] == "0" else "off")
+    try:
+        old = repo.get_digest_modes().get(str(cid), ("standard", None))[0]
+        repo.set_digest_mode(cid, mode, None, call.from_user.id)
+        ps.invalidate_digest_modes()
+        ps.audit(call.from_user.id, "digest_mode", str(cid), f"{old} -> {mode}")
+    except Exception:
+        _edit_panel(call, "❌ Unable to update digest mode.", _nav_markup(back="pnl_dglist_0"))
+        return
+    handle_panel_digest_group(call)
+
+
+@bot.callback_query_handler(
+    func=lambda c: c.data and c.data.startswith("pnl_dgprof_")
+    and c.data[len("pnl_dgprof_"):].lstrip("-").isdigit()
+)
+@panel_guard(owner_only=False)
+def handle_panel_digest_profile_picker(call):
+    cid = int(call.data[len("pnl_dgprof_"):])
+    rows = []
+    for pid, name, _topic, _created, _at, previewed in repo.list_digest_profiles():
+        if previewed:
+            rows.append((_btn(_txt(name, 32), f"pnl_dgassign_{cid}_{pid}"),))
+    rows.append((_btn("🟢 Standard", f"pnl_dgset_{cid}_0"),))
+    _edit_panel(call, "🟣 **Choose a previewed profile**", _nav_markup(rows, back=f"pnl_dggrp_{cid}"))
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("pnl_dgassign_"))
+@panel_guard(owner_only=False)
+def handle_panel_digest_profile_assign(call):
+    parts = call.data.split("_")
+    if len(parts) != 4 or not parts[2].lstrip("-").isdigit() or not parts[3].isdigit():
+        bot.answer_callback_query(call.id, "❌ Bad button payload.")
+        return
+    cid, pid = int(parts[2]), int(parts[3])
+    try:
+        repo.set_digest_mode(cid, "profile", pid, call.from_user.id)
+        ps.invalidate_digest_modes()
+        ps.audit(call.from_user.id, "digest_profile_assign", str(cid), str(pid))
+    except Exception:
+        _edit_panel(call, "❌ Profile is unavailable or not previewed.", _nav_markup(back=f"pnl_dggrp_{cid}"))
+        return
+    handle_panel_digest_group(call)
 
 
 # ---------- Groups list + detail + search + leave (owner-only) ----------
