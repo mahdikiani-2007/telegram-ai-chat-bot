@@ -205,6 +205,7 @@ SETTINGS_SPEC = {
     "debate.max_rounds": ("Debate max rounds", 50, 1, 200),
     "digest.search_reserve": ("Digest search reserve", 10, 0, 20),
     "digest.max_profiles": ("Digest max profiles", 5, 1, 20),
+    "digest.preview_per_hour": ("Digest previews / admin / hour", 3, 1, 20),
 }
 
 # Per-user rate overrides live under limit.<uid>.<cat> keys; loaded as ONE

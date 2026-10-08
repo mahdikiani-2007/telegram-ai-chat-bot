@@ -1,5 +1,6 @@
 import logging
 import re
+import threading
 import time
 import traceback
 
@@ -12,6 +13,15 @@ from services.search import tavily_budget, tavily_web_search
 from timeutil import format_trigger_time_iran, iran_next_digest_epoch, iran_now
 
 log = logging.getLogger("L-bot")
+
+_digest_run_lock = threading.Lock()
+_digest_run_state_lock = threading.Lock()
+_digest_run_active = False
+_digest_run_triggered_by = ""
+_last_digest_report = {}
+_preview_usage = {}
+_preview_usage_lock = threading.Lock()
+_preview_now = time.time
 
 
 # =========================
@@ -219,6 +229,45 @@ def build_profile_digest_text(topic, profile_key):
         return ""
 
 
+def preview_profile(admin_id, profile_id, target_chat_id=None):
+    """Build a profile preview without delivery or persistence."""
+    try:
+        profile = repo.get_digest_profile(profile_id)
+    except Exception:
+        return {"ok": False, "reason": "db", "text": ""}
+    if not profile or not profile[5]:
+        return {"ok": False, "reason": "unpreviewed", "text": ""}
+    try:
+        from handlers.shared import is_owner
+        from services.panel_settings import setting_value
+
+        allowance = 10 if is_owner(admin_id) else int(
+            setting_value("digest.preview_per_hour")
+        )
+    except Exception:
+        allowance = 3
+    now = _preview_now()
+    hour_key = int(now // 3600)
+    with _preview_usage_lock:
+        key = (int(admin_id), hour_key)
+        used = int(_preview_usage.get(key, 0))
+        if used >= allowance:
+            return {"ok": False, "reason": "rate_limit", "text": ""}
+        reserve = _digest_reserve()
+        remaining = tavily_budget.remaining()
+        if remaining is not None and remaining - 2 < reserve:
+            return {"ok": False, "reason": "budget", "text": "",
+                    "remaining": remaining, "reserve": reserve}
+        _preview_usage[key] = used + 1
+    text = build_profile_digest_text(profile[2], f"profile:{profile_id}")
+    if not text:
+        return {"ok": False, "reason": "no_results", "text": ""}
+    try:
+        repo.mark_digest_profile_previewed(profile_id)
+    except Exception:
+        log.warning("preview_profile: failed to mark profile previewed", exc_info=True)
+    return {"ok": True, "reason": "", "text": text,
+            "profile_id": int(profile_id), "target_chat_id": target_chat_id}
 def _send_digest_one(chat_id, heading, digest_text):
     """Single send. Returns (outcome, detail): sent | unreachable |
     migrated(new_id) | failed(redacted error). Never retries (matches the
@@ -364,7 +413,46 @@ def _split_digest_text(heading, digest_text, limit=4000):
     return [c for c in out if c.strip()]
 
 
-def run_digest_cycle(triggered_by=None):
+def _digest_reserve():
+    try:
+        from services.panel_settings import setting_value
+        return int(setting_value("digest.search_reserve"))
+    except Exception:
+        return 10
+
+
+def try_start_digest_run(triggered_by):
+    global _digest_run_active, _digest_run_triggered_by
+    acquired = _digest_run_lock.acquire(blocking=False)
+    if not acquired:
+        return False
+    with _digest_run_state_lock:
+        _digest_run_active = True
+        _digest_run_triggered_by = str(triggered_by or "manual")
+    return True
+
+
+def finish_digest_run(report=None):
+    global _digest_run_active, _last_digest_report, _digest_run_triggered_by
+    with _digest_run_state_lock:
+        if report is not None:
+            _last_digest_report = dict(report)
+        _digest_run_active = False
+        _digest_run_triggered_by = ""
+    if _digest_run_lock.locked():
+        _digest_run_lock.release()
+
+
+def digest_run_snapshot():
+    with _digest_run_state_lock:
+        return {
+            "active": bool(_digest_run_active),
+            "triggered_by": _digest_run_triggered_by,
+            "report": dict(_last_digest_report),
+        }
+
+
+def _run_digest_cycle_unlocked(triggered_by=None):
     """Full matrix run. Returns a report dict with five-way counts
     (sent/failed/unreachable/skipped_off/skipped_budget/skipped_no_results),
     texts built, and Tavily estimate vs actual consumption."""
@@ -516,6 +604,18 @@ def run_digest_cycle(triggered_by=None):
     except Exception:
         pass
     return report
+
+
+def run_digest_cycle(triggered_by=None):
+    """Run one cycle through the shared scheduler/manual/run-all single flight."""
+    if not try_start_digest_run(triggered_by or "manual"):
+        return {"busy": True, "triggered_by": triggered_by or "manual"}
+    report = None
+    try:
+        report = _run_digest_cycle_unlocked(triggered_by)
+        return report
+    finally:
+        finish_digest_run(report)
 
 
 def deliver_to_group(chat_id, digest_date=None, force=False):

@@ -1129,6 +1129,56 @@ class ChatRepository:
         return {r[0]: (r[1], r[2]) for r in conn.execute(
             "SELECT chat_id, mode, profile_id FROM digest_group_config").fetchall()}
 
+    def list_digest_groups_paged(self, filter_key="all", query="", limit=10, offset=0,
+                                 digest_date=None):
+        """Return group rows for the digest panel, newest last_seen first.
+
+        Rows are (chat_id, type, username, title, last_seen, mode, profile_id,
+        delivery_status, delivery_error, unreachable_count).
+        """
+        date = str(digest_date or __import__("timeutil").format_trigger_time_iran(
+            __import__("time").time()).split(" ")[0])
+        args = ["group", "supergroup"]
+        where = ["k.type IN (?, ?)"]
+        q = self._escape_like(str(query or "").strip()[:64])
+        if q:
+            where.append("(k.title LIKE ? ESCAPE '\\' OR k.username LIKE ? ESCAPE '\\')")
+            args.extend([f"%{q}%", f"%{q}%"])
+        if filter_key == "standard":
+            where.append("COALESCE(c.mode, 'standard') = 'standard'")
+        elif filter_key == "off":
+            where.append("COALESCE(c.mode, 'standard') = 'off'")
+        elif filter_key == "profile":
+            where.append("COALESCE(c.mode, 'standard') = 'profile'")
+        elif filter_key == "unreachable":
+            where.append("COALESCE(u.consecutive_failures, 0) >= 3")
+        sql = f"""SELECT k.chat_id, k.type, COALESCE(k.username, ''),
+                         COALESCE(k.title, ''), k.last_seen,
+                         COALESCE(c.mode, 'standard'), c.profile_id,
+                         d.status, COALESCE(d.error, ''),
+                         COALESCE(u.consecutive_failures, 0)
+                    FROM known_chats k
+                    LEFT JOIN digest_group_config c ON c.chat_id = k.chat_id
+                    LEFT JOIN digest_deliveries d
+                      ON d.chat_id = k.chat_id AND d.digest_date = ?
+                    LEFT JOIN digest_unreachable u ON u.chat_id = k.chat_id
+                   WHERE {' AND '.join(where)}
+                   ORDER BY k.last_seen DESC LIMIT ? OFFSET ?"""
+        args = [date] + args + [max(1, int(limit)), max(0, int(offset))]
+        return self._connect().execute(sql, tuple(args)).fetchall()
+
+    def count_digest_groups(self, filter_key="all", query=""):
+        return len(self.list_digest_groups_paged(filter_key, query, 1000000, 0))
+
+    def count_digest_profile_groups(self, profile_id):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT COUNT(*) FROM digest_group_config WHERE mode = 'profile' AND profile_id = ?",
+            (int(profile_id),)).fetchone()[0]
+
+    def get_digest_delivery_for_date(self, chat_id, digest_date):
+        return self.get_digest_delivery(chat_id, digest_date)
+
     def set_digest_mode(self, chat_id, mode, profile_id, updated_by):
         """mode in standard/off/profile; profile mode requires an existing
         previewed profile (enforced here so no caller can bypass it)."""

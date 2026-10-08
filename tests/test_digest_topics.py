@@ -6,6 +6,7 @@ with cleanup so the shared temp DB stays clean.
 """
 import os
 import sys
+import threading
 import time
 import types as std_types
 
@@ -277,6 +278,70 @@ def test_profile_input_is_sanitized_and_name_is_unique():
             conn = repo._connect()
             conn.execute("DELETE FROM digest_profiles WHERE id = ?", (profile_id,))
             conn.commit()
+
+
+def test_preview_profile_does_not_write_or_send(stubbed):
+    bot, agnes = stubbed
+    pid = repo.create_digest_profile("Preview", "preview topic", 991)
+    repo.mark_digest_profile_previewed(pid)
+    _seed_groups(910191, 910192)
+    repo.set_digest_mode(910191, "profile", pid, 991)
+    ps.invalidate_digest_modes()
+    today = __import__("timeutil").format_trigger_time_iran(
+        __import__("time").time()).split(" ")[0]
+    try:
+        before_history = repo.get_recent_digest_lines(profile_key=f"profile:{pid}")
+        result = digest_mod.preview_profile(991, pid, 991)
+        assert result["ok"] is True
+        assert result["text"]
+        assert bot.sent == []
+        assert repo.get_digest_delivery(910191, today) is None
+        assert repo.get_recent_digest_lines(profile_key=f"profile:{pid}") == before_history
+        assert agnes.calls == 1
+    finally:
+        with repo._write_lock:
+            conn = repo._connect()
+            conn.execute("DELETE FROM digest_profiles WHERE id = ?", (pid,))
+            conn.execute("DELETE FROM digest_history")
+            conn.commit()
+        _clear_groups(910191, 910192)
+        ps.invalidate_digest_modes()
+
+
+def test_preview_rate_limit_and_reserve_refusal(stubbed, monkeypatch):
+    pid = repo.create_digest_profile("PreviewLimit", "preview topic", 991)
+    repo.mark_digest_profile_previewed(pid)
+    try:
+        monkeypatch.setattr(digest_mod, "_preview_usage", {})
+        monkeypatch.setattr(digest_mod, "_preview_now", lambda: 1000.0)
+        ps.set_setting("digest.preview_per_hour", "1")
+        first = digest_mod.preview_profile(992, pid, 992)
+        second = digest_mod.preview_profile(992, pid, 992)
+        assert first["ok"] is True
+        assert second["ok"] is False and second["reason"] == "rate_limit"
+        monkeypatch.setattr(digest_mod.tavily_budget, "remaining", lambda: 0)
+        refused = digest_mod.preview_profile(993, pid, 993)
+        assert refused["ok"] is False and refused["reason"] == "budget"
+    finally:
+        ps.delete_setting("digest.preview_per_hour")
+        with repo._write_lock:
+            conn = repo._connect()
+            conn.execute("DELETE FROM digest_profiles WHERE id = ?", (pid,))
+            conn.commit()
+
+
+def test_digest_run_lock_is_shared_and_last_report_is_snapshot(stubbed, monkeypatch):
+    assert digest_mod.try_start_digest_run("test") is True
+    try:
+        assert digest_mod.try_start_digest_run("manual") is False
+        snapshot = digest_mod.digest_run_snapshot()
+        assert snapshot["active"] is True
+        assert snapshot["triggered_by"] == "test"
+    finally:
+        digest_mod.finish_digest_run({"sent": 2, "failed": 1})
+    snapshot = digest_mod.digest_run_snapshot()
+    assert snapshot["active"] is False
+    assert snapshot["report"]["sent"] == 2
 
 
 def test_mode_change_applies_next_day_and_force(monkeypatch, stubbed):
