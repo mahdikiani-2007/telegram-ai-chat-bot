@@ -1648,25 +1648,25 @@ def _content_msg(uid=1, text="hello broadcast", mid=50):
 
 
 def test_broadcast_flow_nothing_before_confirm(monkeypatch):
-    """Target -> content builds a draft + preview; zero recipient sends."""
+    """Every target builds a preview; zero recipient sends before confirm."""
     import handlers.panel as panel
 
     _as_owner_admin(monkeypatch, owner=1)
     fb = _broadcast_bot(monkeypatch)
     _seed_known_users(301, 302)
     try:
-        panel.handle_panel_broadcast_target(_pcall(1, "pnl_bc_users"))
-        panel.handle_panel_text_input(_content_msg())
-        assert fb.copied, "preview copy expected"
-        assert all(c[0] == 100 for c in fb.copied)  # only back to owner
-        assert len(fb.sent) == 1  # preview summary
-        text = fb.sent[0][1]
-        assert "nothing sent yet" in text.lower() or "Preview" in text
-        markup = fb.sent[0][2].get("reply_markup")
-        tokens = [b.callback_data for row in markup.keyboard for b in row
-                  if b.callback_data.startswith("pnl_bc_ok_")]
-        assert len(tokens) == 1
-        return tokens[0]
+        for target in ("pnl_bc_users", "pnl_bc_groups", "pnl_bc_both"):
+            fb.copied.clear()
+            fb.sent.clear()
+            panel.handle_panel_broadcast_target(_pcall(1, target))
+            panel.handle_panel_text_input(_content_msg())
+            assert fb.copied, "preview copy expected"
+            assert all(c[0] == 100 for c in fb.copied), "recipient sends must wait for confirm"
+            assert len(fb.sent) == 1
+            markup = fb.sent[0][2].get("reply_markup")
+            tokens = [b.callback_data for row in markup.keyboard for b in row
+                      if b.callback_data.startswith("pnl_bc_ok_")]
+            assert len(tokens) == 1
     finally:
         _clear_known(301, 302, "-800")
         _panel_input_sessions_discard_all()
