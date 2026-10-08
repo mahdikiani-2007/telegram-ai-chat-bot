@@ -449,10 +449,183 @@ def test_group_digest_switch_matrix(monkeypatch):
         ps.invalidate_digest_modes()
 
 
+def test_digest_group_callbacks_accept_real_negative_ids_and_reject_non_groups(monkeypatch):
+    import handlers.panel as panel
+
+    _as_owner(monkeypatch, owner=991)
+    fb = _PanelRecorder()
+    monkeypatch.setattr(panel, "bot", fb)
+    good = -1001234567890
+    private = 123456789
+    _seed_groups(good)
+    repo.upsert_known_chat(str(private), "private", "user", "Private")
+    try:
+        panel.handle_panel_digest_group(_pcall(991, f"pnl_dggrp_{good}"))
+        panel.handle_panel_digest_group_set(_pcall(991, f"pnl_dgset_{good}_0"))
+        panel.handle_panel_digest_profile_picker(_pcall(991, f"pnl_dgprof_{good}"))
+        panel.handle_panel_digest_profile_assign(_pcall(991, f"pnl_dgassign_{good}_999"))
+        before = repo.get_digest_modes()
+        panel.handle_panel_digest_group_set(_pcall(991, f"pnl_dgset_{private}_1"))
+        panel.handle_panel_digest_group_set(_pcall(991, "pnl_dgset_777777_1"))
+        assert repo.get_digest_modes() == before
+        assert fb.acks
+    finally:
+        _clear_groups(good)
+        with repo._write_lock:
+            conn = repo._connect()
+            conn.execute("DELETE FROM known_chats WHERE chat_id = ?", (str(private),))
+            conn.commit()
+
+
+def test_digest_group_list_filters_and_title_search_are_safe(monkeypatch):
+    import handlers.panel as panel
+
+    _as_owner(monkeypatch, owner=991)
+    fb = _PanelRecorder()
+    monkeypatch.setattr(panel, "bot", fb)
+    ids = (-1001234567890, -1001234567891, -1001234567892, -1001234567893)
+    _seed_groups(*ids)
+    repo.set_digest_mode(ids[1], "off", None, 991)
+    repo.set_digest_mode(ids[2], "standard", None, 991)
+    repo.note_digest_unreachable(ids[3], "2026-10-06")
+    repo.note_digest_unreachable(ids[3], "2026-10-07")
+    repo.note_digest_unreachable(ids[3], "2026-10-08")
+    ps.invalidate_digest_modes()
+    try:
+        for code in range(5):
+            panel.handle_panel_digest_groups(_pcall(991, "pnl_dglist_0"))
+            panel.handle_panel_digest_filter(_pcall(991, f"pnl_dgfilter_{code}"))
+        panel.handle_panel_digest_search(_pcall(991, "pnl_dgsearch_0"))
+        panel.handle_panel_text_input(_ns(from_user=_ns(id=991),
+            chat=_ns(type="private", id=100), text="G-1001234567890"))
+        assert fb.edits
+    finally:
+        _clear_groups(*ids)
+        ps.invalidate_digest_modes()
+
+
+def test_digest_callbacks_permission_stale_profile_and_escaped_title(monkeypatch):
+    import handlers.panel as panel
+
+    _as_owner(monkeypatch, owner=991)
+    ps.grant_admin(992, 991)
+    fb = _PanelRecorder()
+    monkeypatch.setattr(panel, "bot", fb)
+    gid = -1001234567895
+    _seed_groups(gid)
+    with repo._write_lock:
+        conn = repo._connect()
+        conn.execute("UPDATE known_chats SET title = ? WHERE chat_id = ?",
+                     ("<Sensitive>\n" + "x" * 100, str(gid)))
+        conn.commit()
+    pid = repo.create_digest_profile("Stale", "topic", 991)
+    repo.mark_digest_profile_previewed(pid)
+    try:
+        for uid, chat_type in ((999, "private"), (992, "group")):
+            call = _pcall(uid, f"pnl_dggrp_{gid}")
+            call.message.chat.type = chat_type
+            panel.handle_panel_digest_group(call)
+        assert fb.edits == []
+        repo.delete_digest_profile(pid)
+        panel.handle_panel_digest_profile_assign(_pcall(992, f"pnl_dgassign_{gid}_{pid}"))
+        assert fb.acks or fb.edits
+        text = panel._render_digest_groups(_pcall(992, "pnl_dglist_0"))[0]
+        assert "<Sensitive>" not in text
+        assert len(text.splitlines()[2]) < 100
+    finally:
+        ps.revoke_admin(992)
+        _clear_groups(gid)
+
+
+def test_digest_run_lock_releases_after_exception_and_blocks_send_now(monkeypatch):
+    _as_owner(monkeypatch, owner=991)
+    gid = -1001234567894
+    _seed_groups(gid)
+    assert digest_mod.try_start_digest_run("scheduler") is True
+    try:
+        assert digest_mod.run_digest_cycle("manual")["busy"] is True
+        assert digest_mod.deliver_to_group(gid, force=True)["status"] == "busy"
+    finally:
+        digest_mod.finish_digest_run(None)
+        _clear_groups(gid)
+    assert digest_mod.try_start_digest_run("exception") is True
+    digest_mod.finish_digest_run(None)
+    assert digest_mod.try_start_digest_run("after-exception") is True
+    digest_mod.finish_digest_run(None)
+
+
+def test_owner_only_profile_create_edit_preview_delete_flow(monkeypatch):
+    import handlers.panel as panel
+
+    _as_owner(monkeypatch, owner=991)
+    ps.grant_admin(992, 991)
+    fb = _PanelRecorder()
+    monkeypatch.setattr(panel, "bot", fb)
+    monkeypatch.setattr(digest_mod, "TAVILY_API_KEY", "test-key")
+    try:
+        panel.handle_panel_digest_profiles(_pcall(992, "pnl_dgprofiles_0"))
+        assert fb.edits == []
+        panel.handle_panel_digest_profiles(_pcall(991, "pnl_dgprofiles_0"))
+        panel.handle_panel_digest_profile_new(_pcall(991, "pnl_dgprofile_new_0"))
+        panel.handle_panel_text_input(_ns(from_user=_ns(id=991),
+            chat=_ns(type="private", id=100), text="Owner profile"))
+        panel.handle_panel_text_input(_ns(from_user=_ns(id=991),
+            chat=_ns(type="private", id=100), text="science news"))
+        profile = repo.list_digest_profiles()[-1]
+        assert profile[1] == "Owner profile"
+        panel.handle_panel_digest_profile_preview(
+            _pcall(991, f"pnl_dgprofile_preview_{profile[0]}"))
+        assert fb.sent and all(item[0][0] == 100 for item in fb.sent)
+        panel.handle_panel_digest_profile_edit(
+            _pcall(991, f"pnl_dgprofile_edit_{profile[0]}"))
+        panel.handle_panel_text_input(_ns(from_user=_ns(id=991),
+            chat=_ns(type="private", id=100), text="new topic"))
+        assert repo.get_digest_profile(profile[0])[5] is None
+        panel.handle_panel_digest_profile_delete(
+            _pcall(991, f"pnl_dgprofile_delete_{profile[0]}"))
+        assert str(repo.count_digest_profile_groups(profile[0])) in (
+            fb.edits[-1][0][0] if fb.edits else ""
+        )
+        panel.handle_panel_digest_profile_delete_ok(
+            _pcall(991, f"pnl_dgprofile_delete_ok_{profile[0]}"))
+        assert repo.get_digest_profile(profile[0]) is None
+    finally:
+        ps.revoke_admin(992)
+        with repo._write_lock:
+            conn = repo._connect()
+            conn.execute("DELETE FROM digest_profiles")
+            conn.commit()
+
+
+def test_profile_callbacks_and_inputs_require_owner_private_chat(monkeypatch):
+    import handlers.panel as panel
+
+    _as_owner(monkeypatch, owner=991)
+    ps.grant_admin(992, 991)
+    fb = _PanelRecorder()
+    monkeypatch.setattr(panel, "bot", fb)
+    try:
+        for uid, chat_type in ((992, "private"), (991, "group"), (999, "private")):
+            call = _pcall(uid, "pnl_dgprofiles_0")
+            call.message.chat.type = chat_type
+            panel.handle_panel_digest_profiles(call)
+        assert fb.edits == []
+        panel.handle_panel_digest_profile_new(_pcall(991, "pnl_dgprofile_new_0"))
+        panel.handle_panel_text_input(_ns(from_user=_ns(id=992),
+            chat=_ns(type="private", id=100), text="not owner"))
+        assert repo.list_digest_profiles() == []
+        panel.handle_panel_text_input(_ns(from_user=_ns(id=991),
+            chat=_ns(type="group", id=-1001234567896), text="wrong chat"))
+        assert repo.list_digest_profiles() == []
+    finally:
+        ps.revoke_admin(992)
+
+
 class _PanelRecorder:
     def __init__(self):
         self.edits = []
         self.sent = []
+        self.acks = []
 
     def edit_message_text(self, *a, **k):
         self.edits.append((a, k))
@@ -461,8 +634,11 @@ class _PanelRecorder:
         self.sent.append((a, k))
         return _ns(message_id=9)
 
+    def reply_to(self, message, text, **kwargs):
+        return self.send_message(message.chat.id, text, **kwargs)
+
     def answer_callback_query(self, *a, **k):
-        pass
+        self.acks.append((a, k))
 
 
 def test_oversized_profile_text_split(stubbed, monkeypatch):

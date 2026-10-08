@@ -623,7 +623,13 @@ def deliver_to_group(chat_id, digest_date=None, force=False):
     ledger: an already-sent group reports already_sent and sends nothing
     unless force (owner-only, confirm-gated upstream) replaces the row.
     Returns a small result dict. Never raises."""
+    acquired = False
     try:
+        if not repo.is_known_digest_group(chat_id):
+            return {"status": "invalid_group", "sent": 0}
+        if not try_start_digest_run("send-now"):
+            return {"status": "busy", "sent": 0}
+        acquired = True
         today = digest_date or format_trigger_time_iran(time.time()).split(" ")[0]
         existing = repo.get_digest_delivery(chat_id, today)
         if existing and existing[1] == "sent" and not force:
@@ -673,6 +679,9 @@ def deliver_to_group(chat_id, digest_date=None, force=False):
     except Exception:
         log.warning("deliver_to_group failed for %s", chat_id, exc_info=True)
         return {"status": "failed", "sent": 0}
+    finally:
+        if acquired:
+            finish_digest_run(None)
 
 
 def _digest_scheduler_loop():

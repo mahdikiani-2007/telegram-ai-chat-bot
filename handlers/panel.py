@@ -18,6 +18,10 @@ from sessions import (
     PANEL_BROADCAST_CHAT,
     PANEL_BROADCAST_CONTENT,
     PANEL_GROUP_SEARCH,
+    PANEL_DIGEST_GROUP_SEARCH,
+    PANEL_DIGEST_PROFILE_NAME,
+    PANEL_DIGEST_PROFILE_TOPIC,
+    PANEL_DIGEST_PROFILE_EDIT_TOPIC,
     PANEL_LIMIT_ADD,
     PANEL_SETTING_VALUE,
     PANEL_USER_SEARCH,
@@ -26,6 +30,11 @@ from sessions import (
 )
 
 log = logging.getLogger("L-bot")
+
+DIGEST_MODE_CODES = {0: "standard", 1: "off"}
+DIGEST_FILTER_CODES = {
+    0: "all", 1: "standard", 2: "off", 3: "profile", 4: "unreachable",
+}
 
 
 # =========================
@@ -491,6 +500,14 @@ def handle_panel_text_input(message):
             _handle_user_search_text(message)
         elif state == PANEL_GROUP_SEARCH:
             _handle_group_search_text(message)
+        elif state == PANEL_DIGEST_GROUP_SEARCH:
+            _handle_digest_group_search_text(message)
+        elif state == PANEL_DIGEST_PROFILE_NAME:
+            _handle_digest_profile_name_text(message)
+        elif state == PANEL_DIGEST_PROFILE_TOPIC:
+            _handle_digest_profile_topic_text(message, session)
+        elif state == PANEL_DIGEST_PROFILE_EDIT_TOPIC:
+            _handle_digest_profile_edit_topic_text(message, session)
         elif state == PANEL_BROADCAST_CONTENT:
             _handle_broadcast_content(message, session)
         elif state == PANEL_BROADCAST_CHAT:
@@ -588,7 +605,9 @@ PAGE_SIZE = 10
 
 def _txt(s, limit=80):
     """Escape + truncate user-originated text for Markdown messages."""
-    return escape_markdown(str(s or "")[:limit])
+    text = str(s or "").replace("\r", " ").replace("\n", " ")
+    text = "".join(ch if ord(ch) >= 32 else " " for ch in text)
+    return escape_markdown(text[:limit]).replace("<", "\\<").replace(">", "\\>")
 
 
 def _target_allowed(target, me):
@@ -819,14 +838,149 @@ def _digest_overview_text():
 @bot.callback_query_handler(func=lambda c: c.data == "pnl_digest")
 @panel_guard(owner_only=False)
 def handle_panel_digest(call):
+    rows = [(_btn("💬 Groups", "pnl_dglist_0"),)]
+    if is_owner(call.from_user.id):
+        rows.append((_btn("🗂 Profiles", "pnl_dgprofiles_0"),))
     _edit_panel(
         call,
         _digest_overview_text(),
-        _nav_markup([
-            (_btn("💬 Groups", "pnl_dglist_0"),),
-            (_btn("🔄 Refresh", "pnl_digest"),),
-        ]),
+        _nav_markup(rows + [(_btn("🔄 Refresh", "pnl_digest"),)]),
     )
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("pnl_dgprofiles_"))
+@panel_guard(owner_only=True)
+def handle_panel_digest_profiles(call):
+    profiles = repo.list_digest_profiles()
+    lines = ["🗂 **Digest profiles**\n"]
+    rows = [(_btn("➕ Create profile", "pnl_dgprofile_new_0"),)]
+    for pid, name, _topic, _created, _at, previewed in profiles:
+        state = "previewed" if previewed else "needs preview"
+        lines.append(f"• `{pid}` {_txt(name, 40)} — {state}")
+        rows.append((_btn(f"✏️ {_txt(name, 24)}", f"pnl_dgprofile_edit_{pid}"),
+                     _btn("👁 Preview", f"pnl_dgprofile_preview_{pid}")))
+        rows.append((_btn("🗑 Delete", f"pnl_dgprofile_delete_{pid}"),))
+    _edit_panel(call, "\n".join(lines), _nav_markup(rows, back="pnl_digest"))
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("pnl_dgprofile_new_"))
+@panel_guard(owner_only=True)
+def handle_panel_digest_profile_new(call):
+    _panel_input_sessions.set(call.from_user.id, {
+        "state": PANEL_DIGEST_PROFILE_NAME, "owner_only": True,
+    })
+    _edit_panel(call, "🗂 **New profile**\n\nSend a unique name (1–40 chars).",
+                _nav_markup([(_btn("❌ Cancel", "pnl_cancel"),)],
+                            back="pnl_dgprofiles_0"))
+
+
+@bot.callback_query_handler(
+    func=lambda c: c.data and c.data.startswith("pnl_dgprofile_edit_")
+    and c.data[len("pnl_dgprofile_edit_"):].isdigit()
+)
+@panel_guard(owner_only=True)
+def handle_panel_digest_profile_edit(call):
+    pid = int(call.data[len("pnl_dgprofile_edit_"):])
+    profile = repo.get_digest_profile(pid)
+    if not profile:
+        bot.answer_callback_query(call.id, "❌ Profile unavailable.")
+        return
+    _panel_input_sessions.set(call.from_user.id, {
+        "state": PANEL_DIGEST_PROFILE_EDIT_TOPIC,
+        "profile_id": pid, "owner_only": True,
+    })
+    _edit_panel(call, f"✏️ **Edit `{_txt(profile[1], 40)}`**\n\nSend the new topic.",
+                _nav_markup([(_btn("❌ Cancel", "pnl_cancel"),)],
+                            back="pnl_dgprofiles_0"))
+
+
+@bot.callback_query_handler(
+    func=lambda c: c.data and c.data.startswith("pnl_dgprofile_preview_")
+    and c.data[len("pnl_dgprofile_preview_"):].isdigit()
+)
+@panel_guard(owner_only=True)
+def handle_panel_digest_profile_preview(call):
+    pid = int(call.data[len("pnl_dgprofile_preview_"):])
+    from services import digest as digest_service
+
+    result = digest_service.preview_profile(call.from_user.id, pid, call.message.chat.id)
+    if not result.get("ok"):
+        reasons = {
+            "rate_limit": "preview rate limit reached",
+            "budget": "remaining budget must keep the reserve",
+            "unpreviewed": "profile is unavailable",
+            "no_results": "no search results",
+        }
+        _edit_panel(call, f"❌ Preview refused: {reasons.get(result.get('reason'), 'unavailable')}.",
+                    _nav_markup(back="pnl_dgprofiles_0"))
+        return
+    for chunk in _split_digest_text("Digest preview", result["text"]):
+        bot.send_message(call.message.chat.id, chunk, parse_mode="Markdown")
+    _edit_panel(call, "✅ Preview sent only to your private chat.",
+                _nav_markup(back="pnl_dgprofiles_0"))
+
+
+@bot.callback_query_handler(
+    func=lambda c: c.data and c.data.startswith("pnl_dgprofile_delete_")
+    and c.data[len("pnl_dgprofile_delete_"):].isdigit()
+)
+@panel_guard(owner_only=True)
+def handle_panel_digest_profile_delete(call):
+    pid = int(call.data[len("pnl_dgprofile_delete_"):])
+    profile = repo.get_digest_profile(pid)
+    if not profile:
+        bot.answer_callback_query(call.id, "❌ Profile unavailable.")
+        return
+    count = repo.count_digest_profile_groups(pid)
+    _edit_panel(
+        call,
+        f"🗑 **Confirm delete**\n\n`{_txt(profile[1], 40)}` is assigned to `{count}` group(s). "
+        "Those groups revert to Standard.",
+        _nav_markup([(_btn("✅ Confirm delete", f"pnl_dgprofile_delete_ok_{pid}"),)],
+                    back="pnl_dgprofiles_0"),
+    )
+
+
+@bot.callback_query_handler(
+    func=lambda c: c.data and c.data.startswith("pnl_dgprofile_delete_ok_")
+    and c.data[len("pnl_dgprofile_delete_ok_"):].isdigit()
+)
+@panel_guard(owner_only=True)
+def handle_panel_digest_profile_delete_ok(call):
+    pid = int(call.data[len("pnl_dgprofile_delete_ok_"):])
+    affected = repo.delete_digest_profile(pid)
+    ps.audit(call.from_user.id, "digest_profile_delete", str(pid), f"groups={len(affected)}")
+    _edit_panel(call, f"✅ Profile deleted; `{len(affected)}` group(s) reverted to Standard.",
+                _nav_markup(back="pnl_dgprofiles_0"))
+
+
+def _render_digest_groups(call, filter_key="all", query="", page=0):
+    offset = max(0, int(page)) * 10
+    rows = repo.list_digest_groups_paged(filter_key, query, 10, offset)
+    total = repo.count_digest_groups(filter_key, query)
+    lines = [f"💬 **Digest groups** ({total})\n"]
+    buttons = []
+    for cid, _typ, username, title, _last, mode, _pid, status, _error, failures in rows:
+        name = (title or "").strip() or (f"@{username}" if username else str(cid))
+        icon = "⛔" if mode == "off" else ("🟣" if mode == "profile" else "🟢")
+        if failures >= 3:
+            icon = "⚠️"
+        lines.append(f"{icon} {_txt(name, 42)} — `{cid}` {status or 'pending'}")
+        buttons.append((_btn(_txt(name, 28), f"pnl_dggrp_{cid}"),))
+    buttons.append(tuple(_btn(label, f"pnl_dgfilter_{code}")
+                         for code, label in (("0", "All"), ("1", "Standard"),
+                                             ("2", "Off"), ("3", "Profile"),
+                                             ("4", "Unreachable"))))
+    if total > 10:
+        nav = []
+        if page:
+            nav.append(_btn("◀", f"pnl_dglist_{page - 1}"))
+        if offset + len(rows) < total:
+            nav.append(_btn("▶", f"pnl_dglist_{page + 1}"))
+        if nav:
+            buttons.append(tuple(nav))
+    buttons.append((_btn("🔎 Search", "pnl_dgsearch_0"),))
+    return "\n".join(lines), buttons
 
 
 @bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("pnl_dglist_"))
@@ -836,33 +990,34 @@ def handle_panel_digest_groups(call):
         page = max(0, int(call.data.rsplit("_", 1)[1]))
     except (ValueError, IndexError):
         page = 0
-    offset = page * 10
     try:
-        rows = repo.list_digest_groups_paged("all", "", 10, offset)
-        total = repo.count_digest_groups("all", "")
+        text, buttons = _render_digest_groups(call, page=page)
     except Exception:
         log.error("panel digest groups list failed", exc_info=True)
         _edit_panel(call, "❌ DB error.", _nav_markup(back="pnl_digest"))
         return
-    lines = [f"💬 **Digest groups** ({total})\n"]
-    buttons = []
-    for cid, _typ, username, title, _last, mode, pid, status, _error, failures in rows:
-        name = (title or "").strip() or (f"@{username}" if username else str(cid))
-        icon = "⛔" if mode == "off" else ("🟣" if mode == "profile" else "🟢")
-        if failures >= 3:
-            icon = "⚠️"
-        lines.append(f"{icon} {_txt(name, 42)} — `{cid}` {status or 'pending'}")
-        buttons.append((_btn(_txt(name, 28), f"pnl_dggrp_{cid}"),))
-    if total > 10:
-        nav = []
-        if page:
-            nav.append(_btn("◀", f"pnl_dglist_{page - 1}"))
-        if offset + len(rows) < total:
-            nav.append(_btn("▶", f"pnl_dglist_{page + 1}"))
-        if nav:
-            buttons.append(tuple(nav))
-    buttons.append((_btn("🔎 Search", "pnl_dgsearch"),))
-    _edit_panel(call, "\n".join(lines), _nav_markup(buttons, back="pnl_digest"))
+    _edit_panel(call, text, _nav_markup(buttons, back="pnl_digest"))
+
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("pnl_dgfilter_"))
+@panel_guard(owner_only=False)
+def handle_panel_digest_filter(call):
+    try:
+        code = int(call.data.rsplit("_", 1)[1])
+        filter_key = DIGEST_FILTER_CODES[code]
+        text, buttons = _render_digest_groups(call, filter_key=filter_key)
+    except (ValueError, KeyError):
+        bot.answer_callback_query(call.id, "❌ Bad button payload.")
+        return
+    _edit_panel(call, text, _nav_markup(buttons, back="pnl_digest"))
+
+
+@bot.callback_query_handler(func=lambda c: c.data == "pnl_dgsearch_0")
+@panel_guard(owner_only=False)
+def handle_panel_digest_search(call):
+    _panel_input_sessions.set(call.from_user.id, {"state": PANEL_DIGEST_GROUP_SEARCH})
+    _edit_panel(call, "🔎 **Digest group search**\n\nSend a title, @username or chat ID.",
+                _nav_markup([(_btn("❌ Cancel", "pnl_cancel"),)], back="pnl_dglist_0"))
 
 
 @bot.callback_query_handler(
@@ -873,6 +1028,9 @@ def handle_panel_digest_groups(call):
 def handle_panel_digest_group(call):
     cid = int(call.data[len("pnl_dggrp_"):])
     known = repo.get_known_chat(str(cid))
+    if not repo.is_known_digest_group(cid):
+        bot.answer_callback_query(call.id, "❌ Group unavailable.")
+        return
     if not known:
         _edit_panel(call, "That group is no longer available.", _nav_markup(back="pnl_dglist_0"))
         return
@@ -905,10 +1063,14 @@ def handle_panel_digest_group(call):
 @panel_guard(owner_only=False)
 def handle_panel_digest_group_set(call):
     parts = call.data.split("_")
-    if len(parts) != 4 or not parts[2].lstrip("-").isdigit() or parts[3] not in ("0", "1"):
+    if (len(parts) != 4 or not parts[2].lstrip("-").isdigit()
+            or not parts[3].isdigit() or int(parts[3]) not in DIGEST_MODE_CODES):
         bot.answer_callback_query(call.id, "❌ Bad button payload.")
         return
-    cid, mode = int(parts[2]), ("standard" if parts[3] == "0" else "off")
+    cid, mode = int(parts[2]), DIGEST_MODE_CODES[int(parts[3])]
+    if not repo.is_known_digest_group(cid):
+        bot.answer_callback_query(call.id, "❌ Group unavailable.")
+        return
     try:
         old = repo.get_digest_modes().get(str(cid), ("standard", None))[0]
         repo.set_digest_mode(cid, mode, None, call.from_user.id)
@@ -927,6 +1089,9 @@ def handle_panel_digest_group_set(call):
 @panel_guard(owner_only=False)
 def handle_panel_digest_profile_picker(call):
     cid = int(call.data[len("pnl_dgprof_"):])
+    if not repo.is_known_digest_group(cid):
+        bot.answer_callback_query(call.id, "❌ Group unavailable.")
+        return
     rows = []
     for pid, name, _topic, _created, _at, previewed in repo.list_digest_profiles():
         if previewed:
@@ -943,6 +1108,9 @@ def handle_panel_digest_profile_assign(call):
         bot.answer_callback_query(call.id, "❌ Bad button payload.")
         return
     cid, pid = int(parts[2]), int(parts[3])
+    if not repo.is_known_digest_group(cid):
+        bot.answer_callback_query(call.id, "❌ Group unavailable.")
+        return
     try:
         repo.set_digest_mode(cid, "profile", pid, call.from_user.id)
         ps.invalidate_digest_modes()
@@ -1133,6 +1301,82 @@ def _handle_group_search_text(message):
         lines.append(f"• {_txt(label, 50)} — `{cid}`")
         markup.add(_btn(_txt(label, 28), f"pnl_gpick_{cid}"))
     bot.send_message(message.chat.id, "\n".join(lines), parse_mode="Markdown", reply_markup=markup)
+
+
+def _handle_digest_group_search_text(message):
+    raw = (message.text or "").strip()[:64]
+    try:
+        rows = repo.search_known_chats(raw, limit=10)
+        rows = [r for r in rows if r[1] in ("group", "supergroup")]
+    except Exception:
+        log.error("panel digest group search failed", exc_info=True)
+        _safe_reply_to(bot, message, "❌ DB error while searching.")
+        return
+    if not rows:
+        _safe_reply_to(bot, message, "🔍 No group match. Send /admin to reopen the panel.")
+        return
+    lines = ["🔎 **Digest group results**\n"]
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for cid, _typ, username, title, _last in rows:
+        label = (title or "").strip() or (f"@{username}" if username else str(cid))
+        lines.append(f"• {_txt(label, 50)} — `{cid}`")
+        markup.add(_btn(_txt(label, 32), f"pnl_dggrp_{cid}"))
+    markup.add(_btn("◀ Back", "pnl_dglist_0"))
+    bot.send_message(message.chat.id, "\n".join(lines), parse_mode="Markdown",
+                     reply_markup=markup)
+
+
+def _profile_input_owner(message, session):
+    return (getattr(message.chat, "type", None) == "private"
+            and message.from_user is not None
+            and session.get("owner_only") is True
+            and is_owner(message.from_user.id))
+
+
+def _handle_digest_profile_name_text(message):
+    if not (message.chat.type == "private" and is_owner(message.from_user.id)):
+        return
+    name = (message.text or "").strip()
+    if not 1 <= len(name) <= 40:
+        _safe_reply_to(bot, message, "❌ Name must be 1–40 characters.")
+        _panel_input_sessions.set(message.from_user.id, {
+            "state": PANEL_DIGEST_PROFILE_NAME, "owner_only": True,
+        })
+        return
+    _panel_input_sessions.set(message.from_user.id, {
+        "state": PANEL_DIGEST_PROFILE_TOPIC, "name": name, "owner_only": True,
+    })
+    _safe_reply_to(bot, message, "Now send the profile topic, or tap Cancel in the panel.")
+
+
+def _handle_digest_profile_topic_text(message, session):
+    if not _profile_input_owner(message, session):
+        return
+    try:
+        pid = repo.create_digest_profile(
+            session.get("name"), message.text, message.from_user.id)
+    except ValueError as exc:
+        _safe_reply_to(bot, message, f"❌ {_txt(exc, 160)}")
+        _panel_input_sessions.set(message.from_user.id, session)
+        return
+    ps.audit(message.from_user.id, "digest_profile_create", str(pid), "ok")
+    _safe_reply_to(bot, message, "✅ Profile created. Preview it before assignment.")
+
+
+def _handle_digest_profile_edit_topic_text(message, session):
+    if not _profile_input_owner(message, session):
+        return
+    try:
+        ok = repo.update_digest_profile_topic(session.get("profile_id"), message.text)
+    except ValueError as exc:
+        _safe_reply_to(bot, message, f"❌ {_txt(exc, 160)}")
+        _panel_input_sessions.set(message.from_user.id, session)
+        return
+    if not ok:
+        _safe_reply_to(bot, message, "❌ Profile unavailable.")
+        return
+    ps.audit(message.from_user.id, "digest_profile_topic", str(session["profile_id"]), "updated")
+    _safe_reply_to(bot, message, "✅ Topic updated; preview is required again.")
 
 
 # ---------- Leave chat (OWNER ONLY, confirm-gated) ----------

@@ -1129,6 +1129,12 @@ class ChatRepository:
         return {r[0]: (r[1], r[2]) for r in conn.execute(
             "SELECT chat_id, mode, profile_id FROM digest_group_config").fetchall()}
 
+    def is_known_digest_group(self, chat_id):
+        row = self._connect().execute(
+            "SELECT 1 FROM known_chats WHERE chat_id = ? AND type IN ('group', 'supergroup')",
+            (str(chat_id),)).fetchone()
+        return bool(row)
+
     def list_digest_groups_paged(self, filter_key="all", query="", limit=10, offset=0,
                                  digest_date=None):
         """Return group rows for the digest panel, newest last_seen first.
@@ -1151,12 +1157,12 @@ class ChatRepository:
         elif filter_key == "profile":
             where.append("COALESCE(c.mode, 'standard') = 'profile'")
         elif filter_key == "unreachable":
-            where.append("COALESCE(u.consecutive_failures, 0) >= 3")
+            where.append("COALESCE(u.consec_failures, 0) >= 3")
         sql = f"""SELECT k.chat_id, k.type, COALESCE(k.username, ''),
                          COALESCE(k.title, ''), k.last_seen,
                          COALESCE(c.mode, 'standard'), c.profile_id,
                          d.status, COALESCE(d.error, ''),
-                         COALESCE(u.consecutive_failures, 0)
+                         COALESCE(u.consec_failures, 0)
                     FROM known_chats k
                     LEFT JOIN digest_group_config c ON c.chat_id = k.chat_id
                     LEFT JOIN digest_deliveries d
