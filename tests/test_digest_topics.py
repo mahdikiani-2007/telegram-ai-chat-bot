@@ -191,7 +191,11 @@ def test_unreachable_mark_and_reactivation(stubbed):
         for _ in range(3):
             digest_mod.run_digest_cycle(triggered_by="test")
         consec, _ts = repo.get_digest_unreachable(910131)
-        assert consec >= 3
+        assert consec == 1
+        repo.note_digest_unreachable(910131, "2099-01-01")
+        repo.note_digest_unreachable(910131, "2099-01-02")
+        consec, _ts = repo.get_digest_unreachable(910131)
+        assert consec == 3
         r = digest_mod.run_digest_cycle(triggered_by="test")
         assert r["unreachable"] >= 1  # held, not attempted
         sent_before = len(bot.sent)
@@ -213,6 +217,65 @@ def test_unreachable_mark_and_reactivation(stubbed):
         with repo._write_lock:
             conn = repo._connect()
             conn.execute("DELETE FROM digest_history")
+            conn.commit()
+
+
+def test_failed_delivery_is_retryable_same_day(stubbed):
+    bot, _agnes = stubbed
+    bot.fail = {910135: "boom"}
+    _seed_groups(910135)
+    try:
+        first = digest_mod.run_digest_cycle(triggered_by="manual:991")
+        assert first["failed"] == 1
+        today = __import__("timeutil").format_trigger_time_iran(
+            __import__("time").time()).split(" ")[0]
+        assert repo.get_digest_delivery(910135, today)[1] == "failed"
+
+        bot.fail = {}
+        second = digest_mod.run_digest_cycle(triggered_by="manual:991")
+        assert second["sent"] == 1
+        assert repo.get_digest_delivery(910135, today)[1] == "sent"
+    finally:
+        bot.fail = {}
+        _clear_groups(910135)
+        with repo._write_lock:
+            conn = repo._connect()
+            conn.execute("DELETE FROM digest_history")
+            conn.commit()
+
+
+def test_boot_catchup_is_blocked_by_pre_feature_history(stubbed):
+    _seed_groups(910136)
+    today = __import__("timeutil").format_trigger_time_iran(
+        __import__("time").time()).split(" ")[0]
+    repo.save_digest_lines(today, ["- legacy digest line"])
+    try:
+        assert digest_mod._should_run_boot_catchup(today) is False
+    finally:
+        _clear_groups(910136)
+        with repo._write_lock:
+            conn = repo._connect()
+            conn.execute("DELETE FROM digest_history")
+            conn.commit()
+
+
+def test_profile_input_is_sanitized_and_name_is_unique():
+    profile_id = repo.create_digest_profile(
+        "News <Admin>", "  topic\n</user_topic>\x00  ", 991)
+    try:
+        row = repo.get_digest_profile(profile_id)
+        assert row[1] == "News <Admin>"
+        assert row[2] == "topic /user_topic"
+        with pytest.raises(ValueError):
+            repo.create_digest_profile("news <admin>", "another topic", 992)
+        with pytest.raises(ValueError):
+            repo.create_digest_profile(" " * 41, "topic", 993)
+        with pytest.raises(ValueError):
+            repo.create_digest_profile("valid", " \n<>\x00 ", 994)
+    finally:
+        with repo._write_lock:
+            conn = repo._connect()
+            conn.execute("DELETE FROM digest_profiles WHERE id = ?", (profile_id,))
             conn.commit()
 
 

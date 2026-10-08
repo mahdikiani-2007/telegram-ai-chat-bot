@@ -1,7 +1,17 @@
 import sqlite3
 import threading
+import re
+from datetime import datetime, timezone
 
 from config import DB_FILE, DIGEST_MEMORY_DAYS
+
+
+def sanitize_digest_topic(value):
+    """Normalize profile topics before storage and prompt embedding."""
+    text = str(value or "")
+    text = re.sub(r"[\x00-\x1f\x7f]", " ", text)
+    text = text.replace("<", "").replace(">", "")
+    return " ".join(text.split())
 
 
 # =========================
@@ -358,11 +368,13 @@ class ChatRepository:
                 CREATE TABLE IF NOT EXISTS digest_unreachable (
                     chat_id TEXT PRIMARY KEY,
                     consec_failures INTEGER NOT NULL DEFAULT 0,
-                    last_failure_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    last_failure_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_failure_date TEXT
                 )
             """)
             for ddl in (
                 "ALTER TABLE digest_history ADD COLUMN profile_key TEXT NOT NULL DEFAULT 'standard'",
+                "ALTER TABLE digest_unreachable ADD COLUMN last_failure_date TEXT",
             ):
                 try:
                     conn.execute(ddl)
@@ -1156,11 +1168,18 @@ class ChatRepository:
             conn.commit()
 
     def create_digest_profile(self, name, topic, created_by):
-        name, topic = str(name or "").strip()[:60], str(topic or "").strip()[:200]
-        if not name or not topic:
+        name = str(name or "").strip()
+        topic = sanitize_digest_topic(topic)[:200]
+        if not name or len(name) > 40 or not topic:
             raise ValueError("profile name and topic are required")
         with self._write_lock:
             conn = self._connect()
+            duplicate = conn.execute(
+                "SELECT 1 FROM digest_profiles WHERE name = ? COLLATE NOCASE",
+                (name,),
+            ).fetchone()
+            if duplicate:
+                raise ValueError("profile name already exists")
             cur = conn.execute(
                 "INSERT INTO digest_profiles (name, topic, created_by) VALUES (?, ?, ?)",
                 (name, topic, int(created_by)),
@@ -1186,7 +1205,7 @@ class ChatRepository:
 
     def update_digest_profile_topic(self, profile_id, topic):
         """New topic + preview reset (must re-preview before assignment)."""
-        topic = str(topic or "").strip()[:200]
+        topic = sanitize_digest_topic(topic)[:200]
         if not topic:
             raise ValueError("topic is required")
         with self._write_lock:
@@ -1225,6 +1244,14 @@ class ChatRepository:
     def record_digest_delivery(self, chat_id, digest_date, profile_key, status, error=""):
         with self._write_lock:
             conn = self._connect()
+            if str(status) != "sent":
+                final = conn.execute(
+                    "SELECT status FROM digest_deliveries "
+                    "WHERE chat_id = ? AND digest_date = ?",
+                    (str(chat_id), str(digest_date)),
+                ).fetchone()
+                if final and final[0] == "sent":
+                    return
             conn.execute(
                 "INSERT INTO digest_deliveries (chat_id, digest_date, profile_key, status, error) "
                 "VALUES (?, ?, ?, ?, ?) "
@@ -1262,16 +1289,23 @@ class ChatRepository:
             "SELECT chat_id, profile_key, status FROM digest_deliveries WHERE digest_date = ?",
             (str(digest_date),)).fetchall()}
 
-    def note_digest_unreachable(self, chat_id):
-        """Bump consecutive-failure counter. Returns the new count."""
+    def note_digest_unreachable(self, chat_id, failure_date=None):
+        """Bump once per digest date. Returns the current count."""
+        if failure_date is None:
+            failure_date = datetime.now(timezone.utc).date().isoformat()
+        failure_date = str(failure_date)
         with self._write_lock:
             conn = self._connect()
             conn.execute(
-                "INSERT INTO digest_unreachable (chat_id, consec_failures, last_failure_at) "
-                "VALUES (?, 1, CURRENT_TIMESTAMP) "
-                "ON CONFLICT(chat_id) DO UPDATE SET consec_failures = consec_failures + 1, "
-                "last_failure_at = CURRENT_TIMESTAMP",
-                (str(chat_id),),
+                "INSERT INTO digest_unreachable "
+                "(chat_id, consec_failures, last_failure_at, last_failure_date) "
+                "VALUES (?, 1, CURRENT_TIMESTAMP, ?) "
+                "ON CONFLICT(chat_id) DO UPDATE SET "
+                "consec_failures = consec_failures + 1, "
+                "last_failure_at = CURRENT_TIMESTAMP, last_failure_date = excluded.last_failure_date "
+                "WHERE digest_unreachable.last_failure_date IS NULL "
+                "OR digest_unreachable.last_failure_date != excluded.last_failure_date",
+                (str(chat_id), failure_date),
             )
             row = conn.execute(
                 "SELECT consec_failures FROM digest_unreachable WHERE chat_id = ?",

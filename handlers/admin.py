@@ -96,6 +96,8 @@ def handle_digest_command(message):
             f"🚫 غیرقابل دسترس: {report['unreachable']}\n"
             f"⏭ خاموش: {report['skipped_off']}, بودجه: {report['skipped_budget']}, "
             f"بی‌نتیجه: {report['skipped_no_results']}\n"
+            "ℹ️ گروه‌هایی که امروز رکورد ledger ندارند، در این اجرا دایجست دریافت می‌کنند؛ "
+            "وضعیت‌های ناموفق و skip نهایی نیستند و در اجرای دستی بعدی قابل تلاش‌اند.\n"
             f"🔎 {est_line} | {use_line}\n\n"
             f"---\n\n{std_text}"
         )
@@ -104,4 +106,3 @@ def handle_digest_command(message):
         log.error("DIGEST COMMAND ERROR", exc_info=True)
         admin_notifier.notify("digest_command_error", traceback.format_exc(limit=5))
         _safe_reply_to(bot, message, "❌ خطایی در اجرای دستور دایجست رخ داد.")
-

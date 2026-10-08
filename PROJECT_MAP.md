@@ -1,6 +1,6 @@
 > This file is the authoritative map of the codebase. Read it BEFORE exploring code. Keep it updated after EVERY code change.
 
-`Last verified:` 2026-10-06 — digest topics Stage A (per-group modes, profiles backend, ledger, budget gate).
+`Last verified:` 2026-10-08 — digest fixes F1/F2/F3/F5 (date-idempotent unreachable failures, retryable ledger rows, deploy-safe catch-up, profile input hardening).
 
 Detail files (read when the summary below is not enough): `docs/map/modules.md` (per-file API), `docs/map/data.md` (tables + session/FSM state), `docs/map/integrations.md` (external APIs + quirks), `docs/map/config.md` (every env var + message/keyboard locations).
 
@@ -65,7 +65,7 @@ Telebot **first-match-wins**; `wiring.register_all()` fixes the order: `handlers
 | Features (`pnl_features/feat_*`) + Settings (`pnl_settings/set_*/setdef_*/limits/limadd/limdel_*`) | callbacks + typed input, any-admin | `handlers/panel.py` + `services/panel_settings.py` | `handle_panel_features/flip`, `handle_panel_settings/detail/reset`, `handle_panel_limits/add/del`, `feature_enabled()`, `setting_value()` | 11 global toggles (admins exempt, fail open); 7 clamped settings + per-user rate overrides (one cached query), old→new audited |
 | Reset user data (`pnl_reset_*/reset_ok_*`) | callbacks, owner-only, private-only | `handlers/panel.py` + `db.reset_user_data()` | `handle_panel_reset[_ok]` | Count-first confirm; one transaction + rollback; group history/summaries/tasks kept; bans/audit/admins kept; in-memory state cleared; post-reset writes tombstoned |
 | Jobs (`pnl_jobs/jp_*/jr_*/jrun*`) + Stats (`pnl_stats`) | Jobs view any-admin, pause/run owner-only; Stats any-admin view-only | `handlers/panel.py` + `services/panel_jobs.py` | `handle_panel_jobs/pause/resume/backup_run[_ok]`, `handle_panel_stats`, `job_snapshot()`, `job_pause/resume()` | Pause = `job.<name>.paused_until` (cached, fail open; sched/backup ≤24h, relay/profiler indefinite); backup run-now = snapshot+send only, single-flight; stats = METRICS + Iran-day buckets (60s cache) |
-| `/digest` | `commands=[digest]`, owner-only + private only | `handlers/admin.py` | `handle_digest_command` | `broadcast_daily_digest`; empty build = failure report |
+| `/digest` | `commands=[digest]`, owner-only + private only | `handlers/admin.py` | `handle_digest_command` | `broadcast_daily_digest`; reports ledger-missing delivery scope and retryable non-sent statuses |
 | Broadcast (`pnl_bcast_menu/bc_users/groups/both/one`, typed chat/content, `pnl_bc_ok_*` confirm, `pnl_bc_stop`) | owner-only private panel flow; single-use 10-min draft token; one run at a time | `handlers/panel.py` + `db.panel_broadcasts` | `handle_panel_broadcast_menu/target/one/confirm/stop`, `_broadcast_worker`, `_send_broadcast_one` | Recipients frozen at draft; banned skipped + counted; 403/unreachable never retried, flood-wait retried ≤3; ≤20/s; progress every 10; audit start/end; runs listed (last 10) |
 | Legacy reply-keyboard broadcast | — | REMOVED in Stage 3A (replaced by above) | — | `broadcast_message`, `_admin_broadcast_sessions`, `get_admin_keyboard` gone; orphan refs grepped clean |
 | `/stats` | `commands=[stats]`, admin-only | `handlers/admin.py` | `handle_stats` | `METRICS` + known chats/users + active debates |
@@ -99,7 +99,7 @@ Telebot **first-match-wins**; `wiring.register_all()` fixes the order: `handlers
 | `/forget <n\|all>` | `commands=[forget]` | `handlers/memory_cmds.py` | `handle_forget` | Single-fact or full wipe |
 | Main chat (text/photo) | `content_types=[text, photo]` catch-all | `handlers/chat.py` | `handle_all_messages` | Full pipeline (§4); Light mirror `handle_light_messages` (text-only, memory `light_<chat>`) + `handle_start_light` |
 | Reminder/todo firing | scheduler claim batches (not Telegram updates) | `services/scheduling.py` | `_fire_reminder`, `_fire_todo_expiry` | Alarm + snooze/dismiss buttons; recurrence roll-forward |
-| Daily digest | scheduler / `/digest` (owner-only) / panel send-now | `services/digest.py` | `run_digest_cycle()`, `broadcast_daily_digest()`, `deliver_to_group()` | Per-group modes (standard/off/profile) + one build per profile + budget gate + delivery ledger + unreachable marking; five-way counts; per-profile repeat guard |
+| Daily digest | scheduler / `/digest` (owner-only) / panel send-now | `services/digest.py` | `run_digest_cycle()`, `broadcast_daily_digest()`, `deliver_to_group()` | Per-group modes (standard/off/profile) + one build per profile + budget gate + delivery ledger where only sent is final; date-idempotent unreachable marking; boot catch-up suppressed when today's history predates the ledger; five-way counts; per-profile repeat guard |
 | Daily backup | scheduler 04:00 Iran | `services/backup.py` | `send_daily_backup` | Purge + VACUUM → gzip snapshot → admin DM + rotation |
 
 ## 12. Background jobs, schedulers, error handling
