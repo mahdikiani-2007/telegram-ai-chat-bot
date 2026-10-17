@@ -1321,3 +1321,109 @@ def handle_remind_dismiss(call):
     except Exception:
         log.error("REMIND DISMISS CALLBACK ERROR", exc_info=True)
         bot.answer_callback_query(call.id, "❌ خطا رخ داد.")
+
+# =========================
+# Pending reminder list + delete
+# =========================
+_REMINDER_REC_LABELS = {"none": "1️⃣ One-time", "daily": "🔁 Daily", "weekly": "📆 Weekly"}
+
+def _build_reminder_list_text(chat_id_str):
+    """Render pending reminders for a chat scope, or (None, None) if empty."""
+    reminders = repo.get_pending_reminders(chat_id_str)
+    if not reminders:
+        return None, None
+    lines = ["🔔 **Active Reminders**\n"]
+    for idx, (rid, _chat_id, _creator_id, text, trigger_time, recurrence, assignee_username) in enumerate(reminders, 1):
+        rec_label = _REMINDER_REC_LABELS.get(recurrence or "none", f"⚙️ هر {recurrence}")
+        extra = f"\n   ⏰ {format_trigger_time_iran(trigger_time)}\n   {rec_label}"
+        if assignee_username:
+            extra += f"\n   👥 @{assignee_username}"
+        lines.append(f"{idx}. 🔔 {escape_markdown(text)}{extra}")
+    return "\n".join(lines), reminders
+
+def _build_reminder_list_markup(reminders):
+    """One Delete button per pending reminder."""
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for rid, _chat_id, _creator_id, text, _trigger_time, _recurrence, _assignee_username in reminders:
+        short = text[:20] + ("..." if len(text) > 20 else "")
+        markup.add(types.InlineKeyboardButton(
+            f"🗑 Del ({short})", callback_data=f"remind_del_{rid}"
+        ))
+    return markup
+
+def _user_is_authorized_for_reminder_delete(reminder, call):
+    """IDOR guard + permission: the callback chat MUST match the reminder's
+    stored chat (blocks forwarded-keyboard cross-chat deletion), and the
+    clicker must be the creator or a group admin."""
+    if str(reminder[1]) != str(call.message.chat.id):
+        return False, "⛔ این یادآوری متعلق به این چت نیست."
+    if call.from_user.id == reminder[2]:
+        return True, None
+    if call.message.chat.type != "private":
+        try:
+            member = bot.get_chat_member(call.message.chat.id, call.from_user.id)
+            if member.status in ("administrator", "creator"):
+                return True, None
+        except Exception:
+            log.warning("get_chat_member failed during reminder-delete authorization check", exc_info=True)
+    return False, "⛔ فقط سازنده یادآوری یا ادمین گروه مجاز است."
+
+@bot.message_handler(commands=["reminders"])
+def handle_reminders_command(message):
+    """Display pending reminders with inline delete buttons."""
+    try:
+        chat_id_str = _resolve_todo_chat_id(message)
+        text, reminders = _build_reminder_list_text(chat_id_str)
+        if not text:
+            _safe_reply_to(bot, message,
+                "🔔 لیست یادآوری‌ها خالی است.\nاز `/remind [متن]` برای افزودن استفاده کنید.",
+                parse_mode="Markdown")
+            return
+        bot.send_message(
+            message.chat.id, text, parse_mode="Markdown",
+            reply_markup=_build_reminder_list_markup(reminders),
+        )
+    except Exception:
+        log.error("REMINDERS LIST ERROR", exc_info=True)
+        _safe_reply_to(bot, message, "❌ خطایی در نمایش لیست یادآوری‌ها رخ داد.")
+
+@bot.callback_query_handler(func=lambda c: c.data and c.data.startswith("remind_del_"))
+def handle_remind_delete(call):
+    """Delete a pending reminder. Restricted to the creator or a group admin."""
+    try:
+        reminder_id = int(call.data.split("_", 2)[2])
+        reminder = repo.get_reminder_by_id(reminder_id)
+        if not reminder:
+            bot.answer_callback_query(call.id, "❌ این یادآوری یافت نشد.", show_alert=True)
+            return
+
+        authorized, reason = _user_is_authorized_for_reminder_delete(reminder, call)
+        if not authorized:
+            bot.answer_callback_query(call.id, reason, show_alert=True)
+            return
+
+        repo.dismiss_reminder(reminder_id)
+        bot.answer_callback_query(call.id, "🗑 یادآوری حذف شد!")
+
+        chat_id_str = _resolve_todo_chat_id_from_chat(call.message.chat, call.from_user)
+        text, reminders = _build_reminder_list_text(chat_id_str)
+        if text and reminders:
+            try:
+                bot.edit_message_text(
+                    text, chat_id=call.message.chat.id, message_id=call.message.message_id,
+                    parse_mode="Markdown", reply_markup=_build_reminder_list_markup(reminders),
+                )
+            except Exception:
+                pass
+        else:
+            try:
+                bot.edit_message_text(
+                    "🔔 لیست یادآوری‌ها خالی است.\n\nاز `/remind [متن]` برای افزودن استفاده کنید.",
+                    chat_id=call.message.chat.id, message_id=call.message.message_id,
+                    parse_mode="Markdown",
+                )
+            except Exception:
+                pass
+    except Exception:
+        log.error("REMINDER DELETE CALLBACK ERROR", exc_info=True)
+        bot.answer_callback_query(call.id, "❌ خطا رخ داد.")

@@ -107,10 +107,10 @@ def test_bot_objects_and_handler_counts():
         pytest.skip(f"handlers migration in progress ({len(done)}/{len(HANDLER_MODULES_CANONICAL)} modules)")
     n_msg = len(getattr(bots_mod.bot, "message_handlers", []))
     n_cb = len(getattr(bots_mod.bot, "callback_query_handlers", []))
-    # Digest-topics Stage A baseline (no LIGHT token): 26 message;
-    # callbacks 66 + 1 group digest-mode switch + digest overview/groups/profile callbacks.
-    assert n_msg == 26, f"message handlers: {n_msg}"
-    assert n_cb == 81, f"callback handlers: {n_cb}"
+    # Digest-topics Stage A baseline (no LIGHT token): 27 message (+/reminders);
+    # callbacks 82 (+reminder delete) = 66 + group digest-mode switch + digest overview/groups/profile callbacks.
+    assert n_msg == 27, f"message handlers: {n_msg}"
+    assert n_cb == 82, f"callback handlers: {n_cb}"
     assert getattr(bots_mod, "bot_light", None) is None  # no LIGHT token in smoke env
 
 

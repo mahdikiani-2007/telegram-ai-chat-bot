@@ -114,6 +114,7 @@ def _sync_bot_commands():
         types.BotCommand("todos", "View the active task list with done/delete buttons"),
         types.BotCommand("todo", "Manage tasks, set recurrence, or delegate using @username"),
         types.BotCommand("remind", "Schedule alerts, recurring reminders, or delegate tasks"),
+        types.BotCommand("reminders", "View pending reminders with delete buttons"),
         types.BotCommand("tldr", "Summarize recent group chat (groups only)"),
         types.BotCommand("myfacts", "View what the bot has durably learned about you"),
         types.BotCommand("forget", "Delete learned facts: /forget [number] or /forget all"),

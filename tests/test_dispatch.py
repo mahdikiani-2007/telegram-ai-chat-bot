@@ -300,3 +300,40 @@ def test_snooze_clears_claim():
         assert row[0] is None
     finally:
         repo.dismiss_reminder(rid)
+
+
+def test_pending_reminders_list_and_delete_authorization():
+    repo = _repo()
+    rid = _add_due_reminder("pending-a")
+    try:
+        pending = {r[0]: r for r in repo.get_pending_reminders(424243)}
+        assert rid in pending
+        assert pending[rid][2] == 1  # creator_id
+        assert "pending-a" in pending[rid][3]  # text
+
+        from handlers import tasks as tasks_mod
+
+        class _User:
+            def __init__(self, uid):
+                self.id = uid
+
+        class _Chat:
+            type = "private"
+            id = 424243
+
+        class _Msg:
+            chat = _Chat()
+
+        class _Call:
+            def __init__(self, uid):
+                self.message = _Msg()
+                self.from_user = _User(uid)
+
+        # creator may delete
+        assert tasks_mod._user_is_authorized_for_reminder_delete(pending[rid], _Call(1))[0]
+        # a different private-chat user may not
+        ok, reason = tasks_mod._user_is_authorized_for_reminder_delete(pending[rid], _Call(999))
+        assert not ok and "سازنده" in reason
+    finally:
+        repo.dismiss_reminder(rid)
+    assert repo.get_reminder_by_id(rid) is None

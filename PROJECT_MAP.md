@@ -1,6 +1,6 @@
 > This file is the authoritative map of the codebase. Read it BEFORE exploring code. Keep it updated after EVERY code change.
 
-`Last verified:` 2026-10-08 — digest panel groups/search/filters plus owner-only profile CRUD and private preview delivery.
+`Last verified:` 2026-10-17 — added `/reminders` pending list with owner-or-admin delete buttons.
 
 Detail files (read when the summary below is not enough): `docs/map/modules.md` (per-file API), `docs/map/data.md` (tables + session/FSM state), `docs/map/integrations.md` (external APIs + quirks), `docs/map/config.md` (every env var + message/keyboard locations).
 
@@ -79,6 +79,8 @@ Telebot **first-match-wins**; `wiring.register_all()` fixes the order: `handlers
 | Wizard free-text input | func `_is_waiting_text_input`, text | `handlers/tasks.py` | `handle_waiting_text_input` → 4× `_handle_*_text` | Parses via `timeutil`; retry/cancel keyboards on error |
 | `/todos` | `commands=[todos]` | `handlers/tasks.py` | `handle_todos_command` | Active (Done/Del buttons) + expired section |
 | `todo_done_*` / `todo_del_*` | callback prefixes | `handlers/tasks.py` | `handle_todo_done/delete` | Creator-or-admin + same-chat IDOR guard |
+| `/reminders` | `commands=[reminders]` | `handlers/tasks.py` | `handle_reminders_command` | Lists pending reminders + Del buttons |
+| `remind_del_*` | callback prefix | `handlers/tasks.py` | `handle_remind_delete` | Pending-reminder delete; creator-or-admin + same-chat IDOR guard |
 | `remind_snooze_*` / `remind_dismiss_*` | callback prefixes | `handlers/tasks.py` | `handle_remind_snooze/dismiss` | Snooze +15m; dismiss rolls daily/weekly/custom forward |
 | `/reset` | `commands=[reset]` | `handlers/basics.py` | `handle_reset` | Private → `/session` hint; group admin wipes `messages+summaries` (facts kept) |
 | `/stop` | `commands=[stop]` | `handlers/basics.py` (+ Light copy in `handlers/chat.py`) | `handle_stop` → `_handle_stop_generic` | Private: cancel own run; group: must reply to placeholder, owner-or-admin |

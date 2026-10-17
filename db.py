@@ -774,6 +774,16 @@ class ChatRepository:
         ).fetchone()
         return row
 
+    def get_pending_reminders(self, chat_id):
+        """Pending (status=0) reminders for a chat scope, soonest first."""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id, chat_id, creator_id, text, trigger_time, recurrence, assignee_username "
+            "FROM reminders WHERE chat_id = ? AND status = 0 ORDER BY trigger_time ASC",
+            (str(chat_id),),
+        ).fetchall()
+        return rows
+
     # =========================
     # Feature 1: known_chats / group_members (real broadcast + mention data)
     # =========================

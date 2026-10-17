@@ -1,736 +1,58 @@
 {
  "files": {
+  "ai.py": {
+   "handlers": [],
+   "top_functions": 6,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
   "bot.py": {
-   "handlers": [
-    {
-     "file": "bot.py",
-     "line": 2283,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "_ignore_foreign_bot_commands",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 2289,
-     "bot": "bot_light",
-     "kind": "message_handler",
-     "func": "_ignore_foreign_bot_commands_light",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 2582,
-     "bot": "bot",
-     "kind": "middleware_handler",
-     "func": "_track_chat_middleware",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 2588,
-     "bot": "bot_light",
-     "kind": "middleware_handler",
-     "func": "_track_chat_middleware_light",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 2802,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_admin",
-     "commands": "[\"admin\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 2830,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_admin_cancel",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": "❌ Cancel"
-    },
-    {
-     "file": "bot.py",
-     "line": 2859,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_broadcast_groups",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": "👥 Broadcast to Groups"
-    },
-    {
-     "file": "bot.py",
-     "line": 2880,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_broadcast_users",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": "👤 Broadcast to Users"
-    },
-    {
-     "file": "bot.py",
-     "line": 2901,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_broadcast_both",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": "🔄 Broadcast to Both"
-    },
-    {
-     "file": "bot.py",
-     "line": 2922,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_send_specific",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": "🎯 Send to Specific Chat"
-    },
-    {
-     "file": "bot.py",
-     "line": 2961,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_group_list",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": "📋 Group List"
-    },
-    {
-     "file": "bot.py",
-     "line": 3030,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_admin_broadcast_input",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3102,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_stats",
-     "commands": "[\"stats\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3142,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_digest_command",
-     "commands": "[\"digest\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3185,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_todo_command",
-     "commands": "[\"todo\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3243,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_todo_priority",
-     "commands": null,
-     "data_prefix": "todo_pri_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3293,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_todo_category",
-     "commands": null,
-     "data_prefix": "todo_cat_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3398,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_todo_deadline_none",
-     "commands": null,
-     "data_prefix": "todo_dl_none_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3426,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_todo_deadline_custom",
-     "commands": null,
-     "data_prefix": "todo_dl_custom_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3465,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_todo_deadline_retry",
-     "commands": null,
-     "data_prefix": "todo_dl_retry_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3500,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_todo_recurrence",
-     "commands": null,
-     "data_prefix": "todo_rec_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3528,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_todo_custom_recurrence",
-     "commands": null,
-     "data_prefix": "todo_customrec_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3565,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_wait_cancel",
-     "commands": null,
-     "data_prefix": "wait_cancel_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3616,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_remind_command",
-     "commands": "[\"remind\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3700,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_remind_time",
-     "commands": null,
-     "data_prefix": "remind_time_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3768,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_remind_mention",
-     "commands": null,
-     "data_prefix": "remind_ment_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3842,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_remind_recurrence",
-     "commands": null,
-     "data_prefix": "remind_rec_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3870,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_remind_custom_time",
-     "commands": null,
-     "data_prefix": "remind_customtime_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3909,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_remind_custom_recurrence",
-     "commands": null,
-     "data_prefix": "remind_customrec_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 3958,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_waiting_text_input",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": "[\"text\"]",
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4150,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_todos_command",
-     "commands": "[\"todos\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4194,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_todo_done",
-     "commands": null,
-     "data_prefix": "todo_done_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4241,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_todo_delete",
-     "commands": null,
-     "data_prefix": "todo_del_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4288,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_remind_snooze",
-     "commands": null,
-     "data_prefix": "remind_snooze_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4325,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_remind_dismiss",
-     "commands": null,
-     "data_prefix": "remind_dismiss_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4407,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_reset",
-     "commands": "[\"reset\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4445,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_stop",
-     "commands": "[\"stop\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4450,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_image_generation",
-     "commands": "[\"pic\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4527,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_start",
-     "commands": "[\"start\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4598,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_session_command",
-     "commands": "[\"session\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4663,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_new_session",
-     "commands": "[\"new\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4692,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_session_switch",
-     "commands": null,
-     "data_prefix": "sessw_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4878,
-     "bot": "bot",
-     "kind": "register_inline_handler",
-     "func": "<lambda>",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4881,
-     "bot": "bot",
-     "kind": "register_chosen_inline_handler",
-     "func": "<lambda>",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4885,
-     "bot": "bot_light",
-     "kind": "register_inline_handler",
-     "func": "<lambda>",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 4888,
-     "bot": "bot_light",
-     "kind": "register_chosen_inline_handler",
-     "func": "<lambda>",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 5091,
-     "bot": "bot",
-     "kind": "register_guest_message_handler",
-     "func": "<lambda>",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 5095,
-     "bot": "bot_light",
-     "kind": "register_guest_message_handler",
-     "func": "<lambda>",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 5232,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_translate",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": "[\"photo\"]",
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 5236,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_translate",
-     "commands": "[\"tr\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 5403,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_stopall",
-     "commands": "[\"stopall\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 5670,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_instagram_link",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": "[\"text\"]",
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 6208,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_youtube_link",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": "[\"text\"]",
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 6275,
-     "bot": "bot",
-     "kind": "callback_query_handler",
-     "func": "handle_youtube_quality_choice",
-     "commands": null,
-     "data_prefix": "yt_dl_",
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 6425,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_tldr",
-     "commands": "[\"tldr\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 6548,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_myfacts",
-     "commands": "[\"myfacts\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 6570,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_forget",
-     "commands": "[\"forget\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 6616,
-     "bot": "bot",
-     "kind": "message_handler",
-     "func": "handle_all_messages",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": "[\"text\", \"photo\"]",
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 7883,
-     "bot": "bot_light",
-     "kind": "message_handler",
-     "func": "handle_start_light",
-     "commands": "[\"start\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 7897,
-     "bot": "bot_light",
-     "kind": "message_handler",
-     "func": "handle_stopall_light",
-     "commands": "[\"stopall\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 7909,
-     "bot": "bot_light",
-     "kind": "message_handler",
-     "func": "handle_stop_light",
-     "commands": "[\"stop\"]",
-     "data_prefix": null,
-     "content_types": null,
-     "text_match": null
-    },
-    {
-     "file": "bot.py",
-     "line": 7915,
-     "bot": "bot_light",
-     "kind": "message_handler",
-     "func": "handle_light_messages",
-     "commands": null,
-     "data_prefix": null,
-     "content_types": "[\"text\"]",
-     "text_match": null
-    }
-   ],
-   "top_functions": 286,
-   "tables": [
-    "behavior_stats",
-    "bot_media_messages",
-    "chat_log",
-    "digest_history",
-    "group_members",
-    "known_chats",
-    "messages",
-    "reminders",
-    "sessions",
-    "skips",
-    "summaries",
-    "todos",
-    "user_active_sessions",
-    "user_facts"
-   ],
+   "handlers": [],
+   "top_functions": 0,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "bots.py": {
+   "handlers": [],
+   "top_functions": 4,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "config.py": {
+   "handlers": [],
+   "top_functions": 1,
+   "tables": [],
    "env_vars": [
     "ADMIN_ERROR_THROTTLE_SECONDS",
     "ADMIN_ID",
+    "ADMIN_IDS",
     "AGNES_API_KEY",
     "AGNES_BASE",
     "BACKUP_HOUR_IRAN",
-    "BEHAVIOR_PROFILE_HOUR",
-    "BEHAVIOR_TRANSCRIPT_MAX_CHARS",
+    "BACKUP_KEEP_DAILY",
     "CHAT_API_BASE",
     "CHAT_API_KEY",
     "CHAT_MODEL",
     "CHAT_RETRY_ATTEMPTS",
     "DATA_DIR",
-    "DEBATE_DELAY",
-    "DEBATE_GENERATE_ATTEMPTS",
-    "DEBATE_GENERATE_TIMEOUT",
+    "DB_RETENTION_DAYS",
+    "DB_SIZE_WARN_MB",
     "DIGEST_HOUR_IRAN",
     "DIGEST_MINUTE_IRAN",
-    "FACT_EXTRACT_COOLDOWN",
+    "DROP_PENDING_UPDATES",
     "IMAGE_API_KEY",
     "IMAGE_MODEL",
     "INSTAGRAM_COOKIES_FILE",
     "LOCAL_BOT_API_URL",
-    "MAX_DEBATE_ROUNDS",
     "MAX_DISPATCH_RETRIES",
     "RECENT_HISTORY",
     "SCHEDULER_MAX_WORKERS",
     "SESSION_GC_INTERVAL",
     "SESSION_TTL_SECONDS",
+    "SHUTDOWN_GRACE_SECONDS",
     "STREAM_EDIT_INTERVAL",
     "SUMMARIZE_BATCH",
     "SUMMARIZE_THRESHOLD",
@@ -744,29 +66,48 @@
     "TG_API_ID",
     "TG_SESSION_DIR",
     "TG_SESSION_NAME",
-    "TLDR_COOLDOWN_SECONDS",
-    "TLDR_WINDOW_MINUTES",
     "YOUTUBE_COOKIES_FILE",
     "YOUTUBE_MAX_HEIGHT"
    ],
-   "thread_names": [
-    "backup-scheduler",
-    "behavior-profiler",
-    "bot-l-polling",
-    "bot-light-polling",
-    "cookies",
-    "digest-scheduler",
-    "fact-extractor",
-    "reminder-scheduler",
-    "session-gc",
-    "userbot-mtproto"
-   ]
+   "thread_names": []
+  },
+  "db.py": {
+   "handlers": [],
+   "top_functions": 127,
+   "tables": [
+    "behavior_stats",
+    "bot_media_messages",
+    "chat_log",
+    "digest_deliveries",
+    "digest_group_config",
+    "digest_history",
+    "digest_profiles",
+    "digest_unreachable",
+    "group_members",
+    "known_chats",
+    "maintenance_meta",
+    "messages",
+    "panel_admins",
+    "panel_audit",
+    "panel_bans",
+    "panel_broadcasts",
+    "panel_settings",
+    "reminders",
+    "sessions",
+    "skips",
+    "summaries",
+    "todos",
+    "user_active_sessions",
+    "user_facts"
+   ],
+   "env_vars": [],
+   "thread_names": []
   },
   "ig_relay.py": {
    "handlers": [
     {
      "file": "ig_relay.py",
-     "line": 1056,
+     "line": 1096,
      "bot": "bot",
      "kind": "message_handler",
      "func": "_handle_relay_command",
@@ -795,6 +136,1583 @@
    "thread_names": [
     "ig-relay-polling"
    ]
+  },
+  "infra.py": {
+   "handlers": [],
+   "top_functions": 3,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "limits.py": {
+   "handlers": [],
+   "top_functions": 10,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "main.py": {
+   "handlers": [],
+   "top_functions": 1,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": [
+    "backup-scheduler",
+    "behavior-profiler",
+    "bot-l-polling",
+    "bot-light-polling",
+    "digest-scheduler",
+    "fact-extractor",
+    "reminder-scheduler",
+    "session-gc",
+    "userbot-mtproto"
+   ]
+  },
+  "metrics.py": {
+   "handlers": [],
+   "top_functions": 0,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "sessions.py": {
+   "handlers": [],
+   "top_functions": 12,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "timeutil.py": {
+   "handlers": [],
+   "top_functions": 8,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "wiring.py": {
+   "handlers": [],
+   "top_functions": 8,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "services/__init__.py": {
+   "handlers": [],
+   "top_functions": 0,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "services/backup.py": {
+   "handlers": [],
+   "top_functions": 8,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "services/debate.py": {
+   "handlers": [],
+   "top_functions": 10,
+   "tables": [],
+   "env_vars": [
+    "DEBATE_DELAY",
+    "DEBATE_GENERATE_ATTEMPTS",
+    "DEBATE_GENERATE_TIMEOUT",
+    "MAX_DEBATE_ROUNDS"
+   ],
+   "thread_names": []
+  },
+  "services/digest.py": {
+   "handlers": [],
+   "top_functions": 27,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "services/media.py": {
+   "handlers": [],
+   "top_functions": 22,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "services/memory.py": {
+   "handlers": [],
+   "top_functions": 14,
+   "tables": [],
+   "env_vars": [
+    "BEHAVIOR_PROFILE_HOUR",
+    "BEHAVIOR_TRANSCRIPT_MAX_CHARS",
+    "FACT_EXTRACT_COOLDOWN",
+    "TLDR_COOLDOWN_SECONDS",
+    "TLDR_WINDOW_MINUTES"
+   ],
+   "thread_names": []
+  },
+  "services/panel_jobs.py": {
+   "handlers": [],
+   "top_functions": 11,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "services/panel_settings.py": {
+   "handlers": [],
+   "top_functions": 47,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": [
+    "panel-gate-notice"
+   ]
+  },
+  "services/scheduling.py": {
+   "handlers": [],
+   "top_functions": 7,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "services/search.py": {
+   "handlers": [],
+   "top_functions": 10,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "services/streaming.py": {
+   "handlers": [],
+   "top_functions": 16,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/__init__.py": {
+   "handlers": [],
+   "top_functions": 0,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/admin.py": {
+   "handlers": [
+    {
+     "file": "admin.py",
+     "line": 21,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_stats",
+     "commands": "[\"stats\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "admin.py",
+     "line": 60,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_digest_command",
+     "commands": "[\"digest\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    }
+   ],
+   "top_functions": 2,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/basics.py": {
+   "handlers": [
+    {
+     "file": "basics.py",
+     "line": 35,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_reset",
+     "commands": "[\"reset\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "basics.py",
+     "line": 72,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_stop",
+     "commands": "[\"stop\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "basics.py",
+     "line": 76,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_image_generation",
+     "commands": "[\"pic\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "basics.py",
+     "line": 155,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_start",
+     "commands": "[\"start\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "basics.py",
+     "line": 171,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_session_command",
+     "commands": "[\"session\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "basics.py",
+     "line": 235,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_new_session",
+     "commands": "[\"new\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "basics.py",
+     "line": 263,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_session_switch",
+     "commands": null,
+     "data_prefix": "sessw_",
+     "content_types": null,
+     "text_match": null
+    }
+   ],
+   "top_functions": 9,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/chat.py": {
+   "handlers": [
+    {
+     "file": "chat.py",
+     "line": 125,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_all_messages",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": "[\"text\", \"photo\"]",
+     "text_match": null
+    },
+    {
+     "file": "chat.py",
+     "line": 396,
+     "bot": "bot_light",
+     "kind": "message_handler",
+     "func": "handle_start_light",
+     "commands": "[\"start\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "chat.py",
+     "line": 410,
+     "bot": "bot_light",
+     "kind": "message_handler",
+     "func": "handle_stopall_light",
+     "commands": "[\"stopall\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "chat.py",
+     "line": 422,
+     "bot": "bot_light",
+     "kind": "message_handler",
+     "func": "handle_stop_light",
+     "commands": "[\"stop\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "chat.py",
+     "line": 428,
+     "bot": "bot_light",
+     "kind": "message_handler",
+     "func": "handle_light_messages",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": "[\"text\"]",
+     "text_match": null
+    }
+   ],
+   "top_functions": 8,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/debate.py": {
+   "handlers": [
+    {
+     "file": "debate.py",
+     "line": 11,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_stopall",
+     "commands": "[\"stopall\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    }
+   ],
+   "top_functions": 1,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/guard.py": {
+   "handlers": [
+    {
+     "file": "guard.py",
+     "line": 35,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "_ignore_foreign_bot_commands",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "guard.py",
+     "line": 40,
+     "bot": "bot_light",
+     "kind": "message_handler",
+     "func": "_ignore_foreign_bot_commands_light",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "guard.py",
+     "line": 128,
+     "bot": "bot",
+     "kind": "middleware_handler",
+     "func": "_track_chat_middleware",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "guard.py",
+     "line": 133,
+     "bot": "bot_light",
+     "kind": "middleware_handler",
+     "func": "_track_chat_middleware_light",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    }
+   ],
+   "top_functions": 8,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/medialink.py": {
+   "handlers": [
+    {
+     "file": "medialink.py",
+     "line": 38,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_instagram_link",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": "[\"text\"]",
+     "text_match": null
+    },
+    {
+     "file": "medialink.py",
+     "line": 141,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_youtube_link",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": "[\"text\"]",
+     "text_match": null
+    },
+    {
+     "file": "medialink.py",
+     "line": 215,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_youtube_quality_choice",
+     "commands": null,
+     "data_prefix": "yt_dl_",
+     "content_types": null,
+     "text_match": null
+    }
+   ],
+   "top_functions": 3,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/memory_cmds.py": {
+   "handlers": [
+    {
+     "file": "memory_cmds.py",
+     "line": 24,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_tldr",
+     "commands": "[\"tldr\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "memory_cmds.py",
+     "line": 149,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_myfacts",
+     "commands": "[\"myfacts\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "memory_cmds.py",
+     "line": 170,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_forget",
+     "commands": "[\"forget\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    }
+   ],
+   "top_functions": 3,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/panel.py": {
+   "handlers": [
+    {
+     "file": "panel.py",
+     "line": 166,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_stale_keyboard_text",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": "[\"text\"]",
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 177,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_admin_panel",
+     "commands": "[\"admin\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 207,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_home",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 298,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_status",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 307,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_maint",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 324,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_maint_confirm",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 341,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_maint_apply",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 376,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_admins",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 388,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_admin_add",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 400,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_admin_del",
+     "commands": null,
+     "data_prefix": "pnl_admin_del_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 422,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_admin_del_ok",
+     "commands": null,
+     "data_prefix": "pnl_admin_del_ok_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 450,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_cancel",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 489,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_panel_text_input",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 564,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_audit",
+     "commands": null,
+     "data_prefix": "pnl_audit_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 632,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_users",
+     "commands": null,
+     "data_prefix": "pnl_users_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 701,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_user_pick",
+     "commands": null,
+     "data_prefix": "pnl_upick_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 717,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_user",
+     "commands": null,
+     "data_prefix": "pnl_user_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 755,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_user_search",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 838,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 851,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_profiles",
+     "commands": null,
+     "data_prefix": "pnl_dgprofiles_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 866,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_profile_new",
+     "commands": null,
+     "data_prefix": "pnl_dgprofile_new_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 877,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_profile_edit",
+     "commands": null,
+     "data_prefix": "pnl_dgprofile_edit_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 897,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_profile_preview",
+     "commands": null,
+     "data_prefix": "pnl_dgprofile_preview_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 923,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_profile_delete",
+     "commands": null,
+     "data_prefix": "pnl_dgprofile_delete_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 944,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_profile_delete_ok",
+     "commands": null,
+     "data_prefix": "pnl_dgprofile_delete_ok_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 986,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_groups",
+     "commands": null,
+     "data_prefix": "pnl_dglist_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1002,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_filter",
+     "commands": null,
+     "data_prefix": "pnl_dgfilter_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1015,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_search",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1023,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_group",
+     "commands": null,
+     "data_prefix": "pnl_dggrp_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1060,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_group_set",
+     "commands": null,
+     "data_prefix": "pnl_dgset_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1085,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_profile_picker",
+     "commands": null,
+     "data_prefix": "pnl_dgprof_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1103,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_digest_profile_assign",
+     "commands": null,
+     "data_prefix": "pnl_dgassign_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1125,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_groups",
+     "commands": null,
+     "data_prefix": "pnl_groups_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1187,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_group_pick",
+     "commands": null,
+     "data_prefix": "pnl_gpick_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1201,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_group",
+     "commands": null,
+     "data_prefix": "pnl_group_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1242,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_group_digest_mode",
+     "commands": null,
+     "data_prefix": "pnl_dgmode_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1273,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_group_search",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1383,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_leave",
+     "commands": null,
+     "data_prefix": "pnl_leave_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1407,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_leave_ok",
+     "commands": null,
+     "data_prefix": "pnl_leave_ok_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1429,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_ban",
+     "commands": null,
+     "data_prefix": "pnl_ban_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1461,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_ban_ok",
+     "commands": null,
+     "data_prefix": "pnl_ban_ok_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1488,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_unban",
+     "commands": null,
+     "data_prefix": "pnl_unban_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1512,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_unban_ok",
+     "commands": null,
+     "data_prefix": "pnl_unban_ok_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1560,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_features",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1572,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_feature_flip",
+     "commands": null,
+     "data_prefix": "pnl_feat_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1610,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_settings",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1623,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_setting_detail",
+     "commands": null,
+     "data_prefix": "pnl_set_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1654,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_setting_reset",
+     "commands": null,
+     "data_prefix": "pnl_setdef_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1718,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_limits",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1740,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_limit_add",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1753,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_limit_del",
+     "commands": null,
+     "data_prefix": "pnl_limdel_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1813,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_group_debate",
+     "commands": null,
+     "data_prefix": "pnl_gdebate_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1855,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_reset",
+     "commands": null,
+     "data_prefix": "pnl_reset_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 1900,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_reset_ok",
+     "commands": null,
+     "data_prefix": "pnl_reset_ok_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2064,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_broadcast_menu",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2086,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_broadcast_target",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2102,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_broadcast_one",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2195,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_broadcast_confirm",
+     "commands": null,
+     "data_prefix": "pnl_bc_ok_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2250,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_broadcast_stop",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2415,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_jobs",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2456,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_job_pause",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2482,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_job_resume",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2506,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_backup_run",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2518,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_backup_run_ok",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "panel.py",
+     "line": 2608,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_panel_stats",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    }
+   ],
+   "top_functions": 111,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": [
+    "panel-backup-runnnow",
+    "panel-broadcast-runner"
+   ]
+  },
+  "handlers/shared.py": {
+   "handlers": [],
+   "top_functions": 12,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/surfaces.py": {
+   "handlers": [
+    {
+     "file": "surfaces.py",
+     "line": 217,
+     "bot": "bot",
+     "kind": "register_inline_handler",
+     "func": "<lambda>",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "surfaces.py",
+     "line": 220,
+     "bot": "bot",
+     "kind": "register_chosen_inline_handler",
+     "func": "<lambda>",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "surfaces.py",
+     "line": 225,
+     "bot": "bot_light",
+     "kind": "register_inline_handler",
+     "func": "<lambda>",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "surfaces.py",
+     "line": 228,
+     "bot": "bot_light",
+     "kind": "register_chosen_inline_handler",
+     "func": "<lambda>",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "surfaces.py",
+     "line": 436,
+     "bot": "bot",
+     "kind": "register_guest_message_handler",
+     "func": "<lambda>",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "surfaces.py",
+     "line": 441,
+     "bot": "bot_light",
+     "kind": "register_guest_message_handler",
+     "func": "<lambda>",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "surfaces.py",
+     "line": 574,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_translate",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": "[\"photo\"]",
+     "text_match": null
+    },
+    {
+     "file": "surfaces.py",
+     "line": 578,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_translate",
+     "commands": "[\"tr\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    }
+   ],
+   "top_functions": 10,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
+  },
+  "handlers/tasks.py": {
+   "handlers": [
+    {
+     "file": "tasks.py",
+     "line": 158,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_todo_command",
+     "commands": "[\"todo\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 215,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_todo_priority",
+     "commands": null,
+     "data_prefix": "todo_pri_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 264,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_todo_category",
+     "commands": null,
+     "data_prefix": "todo_cat_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 366,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_todo_deadline_none",
+     "commands": null,
+     "data_prefix": "todo_dl_none_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 393,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_todo_deadline_custom",
+     "commands": null,
+     "data_prefix": "todo_dl_custom_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 431,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_todo_deadline_retry",
+     "commands": null,
+     "data_prefix": "todo_dl_retry_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 465,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_todo_recurrence",
+     "commands": null,
+     "data_prefix": "todo_rec_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 492,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_todo_custom_recurrence",
+     "commands": null,
+     "data_prefix": "todo_customrec_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 528,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_wait_cancel",
+     "commands": null,
+     "data_prefix": "wait_cancel_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 572,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_remind_command",
+     "commands": "[\"remind\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 657,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_remind_time",
+     "commands": null,
+     "data_prefix": "remind_time_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 724,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_remind_mention",
+     "commands": null,
+     "data_prefix": "remind_ment_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 796,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_remind_recurrence",
+     "commands": null,
+     "data_prefix": "remind_rec_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 823,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_remind_custom_time",
+     "commands": null,
+     "data_prefix": "remind_customtime_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 861,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_remind_custom_recurrence",
+     "commands": null,
+     "data_prefix": "remind_customrec_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 904,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_waiting_text_input",
+     "commands": null,
+     "data_prefix": null,
+     "content_types": "[\"text\"]",
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 1087,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_todos_command",
+     "commands": "[\"todos\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 1126,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_todo_done",
+     "commands": null,
+     "data_prefix": "todo_done_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 1172,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_todo_delete",
+     "commands": null,
+     "data_prefix": "todo_del_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 1214,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_remind_snooze",
+     "commands": null,
+     "data_prefix": "remind_snooze_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 1250,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_remind_dismiss",
+     "commands": null,
+     "data_prefix": "remind_dismiss_",
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 1371,
+     "bot": "bot",
+     "kind": "message_handler",
+     "func": "handle_reminders_command",
+     "commands": "[\"reminders\"]",
+     "data_prefix": null,
+     "content_types": null,
+     "text_match": null
+    },
+    {
+     "file": "tasks.py",
+     "line": 1390,
+     "bot": "bot",
+     "kind": "callback_query_handler",
+     "func": "handle_remind_delete",
+     "commands": null,
+     "data_prefix": "remind_del_",
+     "content_types": null,
+     "text_match": null
+    }
+   ],
+   "top_functions": 45,
+   "tables": [],
+   "env_vars": [],
+   "thread_names": []
   }
  },
  "handler_order": [
@@ -917,6 +1835,8 @@
   "bot.callback_query_handler:handle_todo_done::todo_done_:",
   "bot.callback_query_handler:handle_todo_delete::todo_del_:",
   "bot.callback_query_handler:handle_remind_snooze::remind_snooze_:",
-  "bot.callback_query_handler:handle_remind_dismiss::remind_dismiss_:"
+  "bot.callback_query_handler:handle_remind_dismiss::remind_dismiss_:",
+  "bot.message_handler:handle_reminders_command:[\"reminders\"]::",
+  "bot.callback_query_handler:handle_remind_delete::remind_del_:"
  ]
 }
