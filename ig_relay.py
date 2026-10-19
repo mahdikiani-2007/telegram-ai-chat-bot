@@ -441,6 +441,36 @@ class InstagramRelay:
         except Exception:
             log.warning("ig-relay: could not persist session", exc_info=True)
 
+    def logout(self):
+        """Invalidate the Instagram client and remove the persisted session.
+
+        The local session is cleared even when Instagram rejects the remote
+        logout request, so the next login starts with a fresh client/session.
+        Returns True when the remote logout completed or no client existed.
+        """
+        remote_ok = True
+        with self._client_lock:
+            client = self._client
+            if client is not None:
+                try:
+                    client.logout()
+                except Exception:
+                    remote_ok = False
+                    log.warning("ig-relay: Instagram logout request failed", exc_info=True)
+            self._client = None
+            try:
+                os.remove(self.session_file)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                remote_ok = False
+                log.warning("ig-relay: could not remove saved session", exc_info=True)
+            self.state["logged_in"] = False
+            self.state["challenge"] = ""
+            self.state["last_error"] = ""
+            self._challenge_until = 0.0
+        return remote_ok
+
     def try_login(self, verification_code=""):
         """Attempt (or retry) an Instagram login. Returns True when logged in.
         Failures are classified and surfaced to the admin instead of raising."""
@@ -822,7 +852,7 @@ class InstagramRelay:
         parts = (message.text or "").strip().split()
         sub = parts[1].lower() if len(parts) > 1 else ""
         args = parts[2:]
-        if sub not in ("", "help", "status"):
+        if sub not in ("", "help", "status", "login", "logout", "verify", "resume"):
             try:
                 from services.panel_settings import feature_enabled
 
@@ -841,6 +871,10 @@ class InstagramRelay:
         elif sub == "off":
             self.store.set_config("enabled", "0")
             self.reply(message, "⛔ ریلی اینستاگرام غیرفعال شد.")
+        elif sub == "login":
+            self.cmd_login(message)
+        elif sub == "logout":
+            self.cmd_logout(message)
         elif sub == "target":
             self.cmd_target(message, args)
         elif sub == "threads":
@@ -866,6 +900,8 @@ class InstagramRelay:
         return (
             "🔁 ریلی اینستاگرام → تلگرام\n\n"
             "/relay status — وضعیت فعلی\n"
+            "/relay login — ورود دوباره به اینستاگرام\n"
+            "/relay logout — خروج و حذف session ذخیره‌شده\n"
             "/relay on — فعال‌سازی ریلی\n"
             "/relay off — توقف ریلی\n"
             "/relay target — با ریپلای روی پیام گروه مقصد (یا /relay target <chat_id>)\n"
@@ -1049,6 +1085,28 @@ class InstagramRelay:
             self.reply(message, "✅ لاگین با موفقیت انجام شد.")
         else:
             self.reply(message, "❌ لاگین ناموفق بود. وضعیت: /relay status")
+
+    def cmd_login(self, message):
+        if self.try_login():
+            self.reply(message, "✅ لاگین با موفقیت انجام شد.")
+        elif self.state.get("challenge") == "2FA":
+            self.reply(
+                message,
+                "📩 کد تأیید به ایمیل/پیامک ارسال شده است.\n"
+                "کد را با این دستور وارد کنید:\n/relay verify <کد>",
+            )
+        else:
+            self.reply(message, "❌ لاگین ناموفق بود. وضعیت: /relay status")
+
+    def cmd_logout(self, message):
+        if self.logout():
+            self.reply(message, "✅ از اینستاگرام خارج شد و session ذخیره‌شده حذف شد.")
+        else:
+            self.reply(
+                message,
+                "⚠️ درخواست خروج اینستاگرام کامل نشد، اما session محلی حذف شد.\n"
+                "اکنون می‌توانید /relay login را اجرا کنید.",
+            )
 
     def cmd_resume(self, message):
         if not self.challenge_pending() and self.state.get("challenge") != "checkpoint":
