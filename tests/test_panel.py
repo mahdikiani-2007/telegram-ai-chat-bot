@@ -1533,11 +1533,12 @@ def test_reset_tombstone_blocks_streaming_save(monkeypatch):
     _stream.drop_user_requests(uid)
     assert entry["cancel"] is True
     assert not [k for k in _stream._active_requests if k[1] == uid]
-    assert ps.save_memory_guarded(str(uid), "assistant", "partial", uid, entry["born"]) is False
+    assert ps.save_memory_guarded(str(uid), "assistant", "partial", uid, entry["born"]) is None
     assert repo.count_messages(str(uid)) == 0
-    # control: untouched user saves normally
+    # control: untouched user saves normally (row id returned)
     entry2 = _stream._register_active_request(other, other, 6002)
-    assert ps.save_memory_guarded(str(other), "assistant", "done", other, entry2["born"]) is True
+    saved_row = ps.save_memory_guarded(str(other), "assistant", "done", other, entry2["born"])
+    assert type(saved_row) is int and saved_row > 0
     assert repo.count_messages(str(other)) == 1
     _stream.drop_user_requests(other)
     repo.clear_chat(str(other))
@@ -1573,10 +1574,20 @@ def test_reset_tombstone_blocks_profiler_fact(monkeypatch):
             return "علی اهل بحث است و زیاد سوال می‌پرسد."
 
     monkeypatch.setattr(mem_mod, "agnes", FakeAgnes())
+    # Seed with the REAL clock (record_behavior stamps the Iran-today date),
+    # THEN shift the clock one Iran-day forward and run the nightly profiler —
+    # it analyzes the day that just ended, i.e. exactly the rows just seeded.
+    import db as db_mod
+
     for uid in (1321, 1322):
         for _ in range(10):
             repo.record_behavior("-910", uid, 20, False, False, False, False, "sample line here", 20)
         repo.log_group_chat("-910", uid, f"U{uid}", "some group chatter here hello")
+    from datetime import timedelta as _timedelta
+    from timeutil import iran_now as _real_iran_now
+
+    tomorrow_same_time = _real_iran_now() + _timedelta(days=1)
+    monkeypatch.setattr(db_mod, "iran_now", lambda: tomorrow_same_time)
     mem_mod._behavior_profile_nightly()
     assert repo.count_user_facts(1321) == 0
     assert repo.count_user_facts(1322) >= 1
@@ -1903,7 +1914,7 @@ def test_tombstone_allows_new_activity_and_prunes(monkeypatch):
     assert ps.tombstoned_after(1401, time.time() - 10) is True
     assert ps.tombstoned_after(1401, time.time() + 60) is False  # new work OK
     assert ps.save_memory_guarded("1401", "user", "fresh hello", 1401,
-                                  time.time() + 60) is True or True  # DB down -> False, no raise
+                                  time.time() + 60) is None or True  # DB down -> None, no raise
     ps._reset_tombstones[1402] = time.time() - 4000  # expired
     ps.note_reset(1403)
     assert 1402 not in ps._reset_tombstones and 1403 in ps._reset_tombstones

@@ -1,9 +1,10 @@
 import sqlite3
 import threading
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from config import DB_FILE, DIGEST_MEMORY_DAYS
+from timeutil import iran_now
 
 
 def sanitize_digest_topic(value):
@@ -384,13 +385,16 @@ class ChatRepository:
 
     # ---- writes ----
     def save_message(self, chat_id, role, text):
+        """Insert one history row and return its primary-key id, so callers
+        can surgically remove exactly this row later (see delete_message_by_id)."""
         with self._write_lock:
             conn = self._connect()
-            conn.execute(
+            cur = conn.execute(
                 "INSERT INTO messages (chat_id, role, text) VALUES (?, ?, ?)",
                 (str(chat_id), role, text),
             )
             conn.commit()
+            return cur.lastrowid
 
     def mark_bot_media_message(self, chat_id, message_id, kind="instagram"):
         """Record a message the bot sent that's just re-uploaded media, so
@@ -436,23 +440,20 @@ class ChatRepository:
             conn.execute("DELETE FROM summaries WHERE chat_id = ?", (str(chat_id),))
             conn.commit()
 
-    def delete_last_user_message(self, chat_id):
-        """Remove the newest user row from a chat's history — used by /stop
-        so an aborted (half-sent / accidental) turn doesn't linger in the
-        session's memory. Returns the deleted text, or None if nothing was
-        deleted."""
+    def delete_message_by_id(self, message_id):
+        """Remove exactly ONE saved history row by primary key. Used by the
+        /stop and stream-error cleanup so an aborted turn deletes its OWN
+        row: delete_last_user_message removed the newest user row of the chat
+        scope, which in busy groups could belong to a different user whose
+        turn started while the aborted one was still streaming. Returns True
+        if a row was removed."""
         with self._write_lock:
             conn = self._connect()
-            row = conn.execute(
-                "SELECT id, text FROM messages WHERE chat_id = ? AND role = 'user' "
-                "ORDER BY id DESC LIMIT 1",
-                (str(chat_id),),
-            ).fetchone()
-            if not row:
-                return None
-            conn.execute("DELETE FROM messages WHERE id = ?", (row[0],))
+            cur = conn.execute(
+                "DELETE FROM messages WHERE id = ?", (int(message_id),)
+            )
             conn.commit()
-            return row[1]
+            return cur.rowcount > 0
 
     def save_summary(self, chat_id, summary, prune_ids):
         with self._write_lock:
@@ -1474,8 +1475,13 @@ class ChatRepository:
                         is_question, is_media, sample_line, hour):
         """Upsert today's per-(chat,user) behavior counters. One SQLite write
         per group message — cheap, no LLM involved. Sample lines are capped
-        (6 lines x 80 chars) so the row can't grow unbounded."""
+        (6 lines x 80 chars) so the row can't grow unbounded. stat_date is the
+        IRAN local date (not SQL date('now'), which is UTC): the nightly
+        profiler runs at 03:30 Iran == 00:00 UTC, exactly when the UTC date
+        rolls over — a UTC stamp there would hand it the just-started, empty
+        day instead of the Iran day that just ended."""
         try:
+            stat_date = iran_now().strftime("%Y-%m-%d")
             with self._write_lock:
                 conn = self._connect()
                 conn.execute(
@@ -1483,7 +1489,7 @@ class ChatRepository:
                        (chat_id, user_id, stat_date, msg_count, total_chars,
                         reply_count, link_count, question_count, media_count,
                         sample_lines, last_hour)
-                       VALUES (?, ?, date('now'), 1, ?, ?, ?, ?, ?, ?, ?)
+                       VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(chat_id, user_id, stat_date) DO UPDATE SET
                          msg_count = msg_count + 1,
                          total_chars = total_chars + excluded.total_chars,
@@ -1494,7 +1500,7 @@ class ChatRepository:
                          sample_lines = SUBSTR(
                            sample_lines || CHAR(10) || excluded.sample_lines, -480),
                          last_hour = excluded.last_hour""",
-                    (str(chat_id), int(user_id), int(msg_len),
+                    (str(chat_id), int(user_id), stat_date, int(msg_len),
                      1 if is_reply else 0, 1 if has_link else 0,
                      1 if is_question else 0, 1 if is_media else 0,
                      str(sample_line or "")[:80], int(hour)),
@@ -1504,12 +1510,14 @@ class ChatRepository:
             pass  # telemetry must never break the message pipeline
 
     def get_day_behavior_rows(self, stat_date=None):
-        """All behavior rows for a given day (default: today UTC, matching
-        the date('now') stamp written by record_behavior). Used by the
-        nightly analyzer."""
+        """All behavior rows for a given day. The default is YESTERDAY's Iran
+        date — matching the Iran-local stamp written by record_behavior and
+        the nightly profiler's schedule (03:30 Iran, analyzing the day that
+        just ended; the old UTC default handed it the just-started empty UTC
+        day). Used by the nightly analyzer."""
         conn = self._connect()
         if stat_date is None:
-            stat_date = conn.execute("SELECT date('now')").fetchone()[0]
+            stat_date = (iran_now().date() - timedelta(days=1)).isoformat()
         return conn.execute(
             """SELECT chat_id, user_id, msg_count, total_chars, reply_count,
                       link_count, question_count, media_count, sample_lines, last_hour
@@ -1520,12 +1528,14 @@ class ChatRepository:
 
     def purge_old_behavior_stats(self, keep_days=3):
         """Behavior rows are only needed until the nightly analyzer runs;
-        keep a couple of days of slack, drop the rest."""
+        keep a couple of days of slack, drop the rest. Cutoff uses the Iran
+        date to match record_behavior's stamping."""
+        cutoff = (iran_now().date() - timedelta(days=int(keep_days))).isoformat()
         with self._write_lock:
             conn = self._connect()
             conn.execute(
-                "DELETE FROM behavior_stats WHERE stat_date < date('now', ?)",
-                (f"-{int(keep_days)} days",),
+                "DELETE FROM behavior_stats WHERE stat_date < ?",
+                (cutoff,),
             )
             conn.commit()
 

@@ -263,7 +263,7 @@ def handle_all_messages(message):
                 _safe_reply_to(bot, message, "⚠️ خطا در دریافت تصویر. لطفاً دوباره تلاش کنید.")
                 return
 
-        user_message_saved = ps.save_memory_guarded(
+        user_msg_row = ps.save_memory_guarded(
             memory_id, "user", tagged_user_text, message.from_user.id, turn_born)
 
         bot.send_chat_action(message.chat.id, "typing")
@@ -290,12 +290,15 @@ def handle_all_messages(message):
         _consume_active_request(req_entry)  # always consume, cancel or not
 
         if status_err == "stopped":
-            # /stop during processing: wipe this turn from the session's
-            # memory so the aborted ask doesn't shape later answers.
-            try:
-                repo.delete_last_user_message(memory_id)
-            except Exception:
-                pass
+            # /stop during processing: wipe this turn's ask from the session's
+            # memory so the aborted ask doesn't shape later answers. Delete by
+            # the exact row saved for THIS turn — the newest-row variant would
+            # remove another group member's message saved meanwhile.
+            if user_msg_row:
+                try:
+                    repo.delete_message_by_id(user_msg_row)
+                except Exception:
+                    pass
             # A partially-streamed answer may have spawned continuation
             # messages — remove them so nothing dangling is left behind.
             for _cid, _mid in (msg_ids or [])[1:]:
@@ -313,12 +316,12 @@ def handle_all_messages(message):
 
         if status_err is not None:
             METRICS["llm_errors"] += 1
-            # The turn died with no answer — remove the user's message from
-            # memory too, so an unanswered ask doesn't sit in the context
-            # shaping later replies (same cleanup the /stop path does).
-            if user_message_saved:
+            # The turn died with no answer — remove its own ask from memory
+            # too, so an unanswered ask doesn't sit in the context shaping
+            # later replies (same targeted-row cleanup the /stop path does).
+            if user_msg_row:
                 try:
-                    repo.delete_last_user_message(memory_id)
+                    repo.delete_message_by_id(user_msg_row)
                 except Exception:
                     pass
             if status_err == 429:
@@ -492,7 +495,7 @@ if bot_light:
             user_first_name = message.from_user.first_name or "کاربر"
             tagged_user_text = f"[{user_first_name}]: {raw_text}"
 
-            user_message_saved = ps.save_memory_guarded(
+            user_msg_row = ps.save_memory_guarded(
                 memory_id, "user", tagged_user_text, message.from_user.id, turn_born)
 
             bot_light.send_chat_action(message.chat.id, "typing")
@@ -511,10 +514,11 @@ if bot_light:
             _consume_active_request(req_entry)
 
             if status_err == "stopped":
-                try:
-                    repo.delete_last_user_message(memory_id)
-                except Exception:
-                    pass
+                if user_msg_row:
+                    try:
+                        repo.delete_message_by_id(user_msg_row)
+                    except Exception:
+                        pass
                 # Remove continuation messages from a partially-streamed answer.
                 for _cid, _mid in (msg_ids or [])[1:]:
                     try:
@@ -531,11 +535,11 @@ if bot_light:
 
             if status_err is not None:
                 METRICS["llm_errors"] += 1
-                # Same cleanup as the L bot: an unanswered turn shouldn't
-                # linger in memory shaping later replies.
-                if user_message_saved:
+                # Same targeted-row cleanup as the L bot: an unanswered turn
+                # shouldn't linger in memory shaping later replies.
+                if user_msg_row:
                     try:
-                        repo.delete_last_user_message(memory_id)
+                        repo.delete_message_by_id(user_msg_row)
                     except Exception:
                         pass
                 if status_err == 429:

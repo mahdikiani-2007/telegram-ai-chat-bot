@@ -2228,7 +2228,31 @@ def handle_panel_broadcast_confirm(call):
     with _broadcast_run_lock:
         _broadcast_run.clear()
         _broadcast_run.update({"id": broadcast_id, "event": cancel})
-    progress = bot.send_message(call.message.chat.id, "📡 Starting…")
+    try:
+        progress = bot.send_message(call.message.chat.id, "📡 Starting…")
+    except Exception:
+        # Without the progress message the worker would run blind — abort
+        # BEFORE any recipient send, restore the draft for a retry, close the
+        # row, and release the lock (it used to stay held until restart).
+        log.error("broadcast progress message failed; aborting before any send",
+                  exc_info=True)
+        with _broadcast_run_lock:
+            if _broadcast_run.get("id") == broadcast_id:
+                _broadcast_run.clear()
+        try:
+            repo.finish_broadcast(broadcast_id, "failed")
+        except Exception:
+            pass
+        ps.audit(call.from_user.id, "broadcast_start", draft["label"],
+                 "progress-message-failed")
+        _panel_broadcast_drafts.set(token, draft)
+        _broadcast_lock.release()
+        try:
+            bot.answer_callback_query(
+                call.id, "❌ Starting the broadcast failed — draft restored, try again.")
+        except Exception:
+            pass
+        return
     stop_markup = types.InlineKeyboardMarkup()
     stop_markup.add(types.InlineKeyboardButton("🛑 Stop", callback_data="pnl_bc_stop"))
     worker = threading.Thread(

@@ -12,7 +12,7 @@ import infra  # noqa: F401 — side-effect import: configures apihelper
 
 from config import (
     ADMIN_ERROR_THROTTLE_SECONDS,
-    ADMIN_ID,
+    OWNER_ID,
     TELEGRAM_TOKEN,
     TELEGRAM_TOKEN_LIGHT,
 )
@@ -113,4 +113,8 @@ class AdminNotifier:
                 log.warning("AdminNotifier: failed to notify admin", exc_info=True)
 
 
-admin_notifier = AdminNotifier(bot, ADMIN_ID, ADMIN_ERROR_THROTTLE_SECONDS)
+# The notifier targets OWNER_ID (first ADMIN_IDS entry, else legacy ADMIN_ID —
+# config guarantees OWNER_ID == ADMIN_ID in the legacy-only case). Reading the
+# legacy ADMIN_ID directly used to mute every error alert whenever the deploy
+# only configured ADMIN_IDS (its default is 0 → notify() silently returned).
+admin_notifier = AdminNotifier(bot, OWNER_ID, ADMIN_ERROR_THROTTLE_SECONDS)

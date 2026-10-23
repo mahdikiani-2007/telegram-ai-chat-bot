@@ -4,6 +4,8 @@ import threading
 import time
 import traceback
 
+from telebot.apihelper import ApiTelegramException
+
 from ai import agnes
 from bots import admin_notifier, bot
 from config import DIGEST_HOUR_IRAN, DIGEST_MINUTE_IRAN, TAVILY_API_KEY
@@ -271,39 +273,68 @@ def preview_profile(admin_id, profile_id, target_chat_id=None):
 def _send_digest_one(chat_id, heading, digest_text):
     """Single send. Returns (outcome, detail): sent | unreachable |
     migrated(new_id) | failed(redacted error). Never retries (matches the
-    historical single-attempt digest path)."""
+    historical single-attempt digest path) — EXCEPT for Telegram Markdown
+    parse-entity 400s, which fall back to one plain-text send: the model's
+    **bold**/**bullet** output can be unbalanced, and without the fallback a
+    single bad LLM writeup failed delivery to every group."""
+    plain_text = f"{heading}\n\n{digest_text}"
+    error = None
     try:
         bot.send_message(chat_id, f"**{heading}**\n\n{digest_text}", parse_mode="Markdown")
         return "sent", ""
-    except Exception as e:
-        outcome, detail = _classify_send_error(e)
-        if outcome == "failed":
+    except ApiTelegramException as e:
+        if getattr(e, "error_code", None) == 400 and "parse entities" in str(e).lower():
             try:
-                from handlers.panel import _redact  # deferred: avoids import cycles
+                bot.send_message(chat_id, plain_text)
+                return "sent", ""
+            except Exception as plain_err:
+                error = plain_err
+        else:
+            error = e
+    except Exception as e:
+        error = e
+    outcome, detail = _classify_send_error(error)
+    if outcome == "failed":
+        try:
+            from handlers.panel import _redact  # deferred: avoids import cycles
 
-                detail = _redact(f"Chat {chat_id}: {e}")
-            except Exception:
-                detail = f"Chat {chat_id}: send failed"[:200]
-        return outcome, detail
+            detail = _redact(f"Chat {chat_id}: {error}")
+        except Exception:
+            detail = f"Chat {chat_id}: send failed"[:200]
+    return outcome, detail
 
 
 def _send_profile_chunks(chat_id, heading, digest_text):
     """C5: profile digests split on line boundaries so no Telegram message
-    exceeds 4096 chars. The first failing chunk decides the outcome
-    (earlier chunks may already be delivered — still reported failed)."""
+    exceeds 4096 chars, each chunk with the same Markdown→plain fallback as
+    _send_digest_one (parse-entity 400s never fail a chunk outright). The
+    first failing chunk decides the outcome (earlier chunks may already be
+    delivered — still reported failed)."""
     for chunk in _split_digest_text(heading, digest_text):
+        error = None
         try:
             bot.send_message(chat_id, chunk, parse_mode="Markdown")
-        except Exception as e:
-            outcome, detail = _classify_send_error(e)
-            if outcome == "failed":
+            continue
+        except ApiTelegramException as e:
+            if getattr(e, "error_code", None) == 400 and "parse entities" in str(e).lower():
                 try:
-                    from handlers.panel import _redact
+                    bot.send_message(chat_id, chunk)
+                    continue
+                except Exception as plain_err:
+                    error = plain_err
+            else:
+                error = e
+        except Exception as e:
+            error = e
+        outcome, detail = _classify_send_error(error)
+        if outcome == "failed":
+            try:
+                from handlers.panel import _redact
 
-                    detail = _redact(f"Chat {chat_id}: {e}")
-                except Exception:
-                    detail = f"Chat {chat_id}: send failed"[:200]
-            return outcome, detail
+                detail = _redact(f"Chat {chat_id}: {error}")
+            except Exception:
+                detail = f"Chat {chat_id}: send failed"[:200]
+        return outcome, detail
     return "sent", ""
 
 

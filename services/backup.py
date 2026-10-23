@@ -11,13 +11,13 @@ import traceback
 
 from bots import admin_notifier, bot
 from config import (
-    ADMIN_ID,
     BACKUP_HOUR_IRAN,
     BACKUP_KEEP_DAILY,
     DATA_DIR,
     DB_FILE,
     DB_RETENTION_DAYS,
     DB_SIZE_WARN_MB,
+    OWNER_ID,
 )
 from db import repo
 from metrics import METRICS
@@ -125,10 +125,12 @@ def send_daily_backup(admin_id=None):
     """Build the snapshot, rotate local copies, and send the newest to an
     admin's DM. Best-effort and heavily guarded — a backup problem must
     never take the bot down. `admin_id` targets the send (Stage 3B run-now
-    sends to the requesting owner); None keeps the legacy ADMIN_ID target.
+    sends to the requesting owner); None falls back to OWNER_ID (first
+    ADMIN_IDS entry, else legacy ADMIN_ID) so the scheduled run still has a
+    destination on ADMIN_IDS-only deployments.
     NOTE: no retention purge or VACUUM here — those live in
     _run_daily_maintenance, which only the scheduled run calls."""
-    target = admin_id or ADMIN_ID
+    target = admin_id or OWNER_ID
     if not target:
         log.info("Daily backup skipped: no admin target.")
         return False

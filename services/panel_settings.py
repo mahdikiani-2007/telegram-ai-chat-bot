@@ -477,17 +477,18 @@ def _memory_owner_uid(memory_id):
 def save_memory_guarded(memory_id, role, text, sender_uid=None, born=None):
     """repo.save_message wrapper that drops resurrection writes: if the
     sender was reset after this turn started, the save is skipped (logged).
-    Missing sender/born → save normally (fail open). Returns True if saved."""
+    Missing sender/born → save normally (fail open). Returns the saved row's
+    id (truthy int) so the caller can delete exactly this row later, or None
+    when the save was dropped/failed."""
     try:
         if (sender_uid is not None and born is not None
                 and tombstoned_after(sender_uid, born)):
             log.info("dropping post-reset %s save for uid %s", role, sender_uid)
-            return False
-        repo.save_message(memory_id, role, text)
-        return True
+            return None
+        return repo.save_message(memory_id, role, text)
     except Exception:
         log.warning("guarded save failed", exc_info=True)
-        return False
+        return None
 # =========================
 # Digest mode cache (one query, 10s TTL, fail open to all-standard).
 # Consulted only in the digest path — never per user message.

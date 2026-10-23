@@ -26,7 +26,7 @@
 | `digest_deliveries` | `(chat_id, digest_date) PK, profile_key, status, error, sent_at` | every digest send path | only `sent` is final; failed/unreachable/skip rows remain retryable the same day |
 | `digest_unreachable` | `chat_id PK, consec_failures, last_failure_at, last_failure_date` (counter increments once per digest date; ≥3 held; cleared on success or newer last_seen) | send-failure classifier | skip logic |
 | `user_facts` | `(user_id, fact) PK, source_chat_id, visibility (private/group), created_at` (cap 50/user) | fact extractor + behavior profiler (`add_user_facts`) | `_inject_user_profile` (scoped), `/myfacts`, `/forget` |
-| `behavior_stats` | `(chat_id, user_id, stat_date) PK, msg_count, total_chars, reply/link/question/media counts, sample_lines (≤6×80ch), last_hour` (kept ~3d) | middleware (`record_behavior`, groups, zero-LLM) | nightly behavior profiler |
+| `behavior_stats` | `(chat_id, user_id, stat_date) PK, msg_count, total_chars, reply/link/question/media counts, sample_lines (≤6×80ch), last_hour` (kept ~3d; `stat_date` is the IRAN local date, not UTC) | middleware (`record_behavior`, groups, zero-LLM) | nightly behavior profiler (default query = yesterday-Iran) |
 | `chat_log` | `chat_id, user_id, first_name, text (≤1000ch), ts` (purged >48h by session-GC loop; buffer for profiler + `/tldr`) | middleware (`log_group_chat`; bots/commands excluded) | `/tldr`, behavior profiler transcript |
 | `maintenance_meta` | `key PK, value` (e.g. `last_vacuum`) | `set_maintenance_value` | `maybe_vacuum` gating |
 | `panel_settings` | `key PK, value` (toggles, numeric overrides, maintenance + notice keys; digest reserve/max profiles/preview allowance) | panel (`set_setting`), Stage 2+ writers | `get_setting` (10s cached) |

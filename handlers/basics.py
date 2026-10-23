@@ -21,6 +21,7 @@ from services.streaming import (
     _safe_reply_to,
     escape_markdown,
     rate_limited_reply,
+    sanitize_backtick_span,
 )
 
 log = logging.getLogger("L-bot")
@@ -119,7 +120,10 @@ def handle_image_generation(message):
                 except Exception:
                     pass
                 display_prompt = prompt if len(prompt) <= 900 else prompt[:900] + "..."
-                caption_text = f"خروجی پردازش تصویر:\n\n`{display_prompt}`"
+                # sanitize_backtick_span: a raw backtick in the prompt would
+                # terminate the code span and make sendPhoto 400 (can't parse
+                # entities) — after the image was already paid for.
+                caption_text = f"خروجی پردازش تصویر:\n\n`{sanitize_backtick_span(display_prompt)}`"
                 bot.send_photo(
                     chat_id=message.chat.id,
                     photo=image_bytes,
