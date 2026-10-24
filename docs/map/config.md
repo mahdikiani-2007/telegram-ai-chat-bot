@@ -22,6 +22,8 @@
 | `VISION_MODEL` | O | `agnes-3.0-flash` | Photo-understanding model — photo turns bypass the chat router (it doesn't deliver images); probe with `tools/vision_check.py` |
 | `VISION_API_BASE` | O | falls back to `AGNES_BASE` | Vision completions endpoint base |
 | `VISION_API_KEY` | O | falls back to `AGNES_API_KEY` | Vision Bearer key (header built in `infra.py`) |
+| `MINIAPP_PORT` | O | `${PORT:-8080}` | In-process Mini App HTTP server bind port (`miniapp_server.py`); Local Bot API uses 8081 — no clash |
+| `MINIAPP_PUBLIC_URL` | O | `https://$RAILWAY_PUBLIC_DOMAIN` when that env exists | Public HTTPS URL handed to Telegram (`/play` web_app button + menu button). Unset without Railway domain → games self-disable |
 | `CHAT_RETRY_ATTEMPTS` | O | `2` | Extra attempts *before* streaming starts |
 | `RECENT_HISTORY` | O | `18` | Verbatim turns per LLM context |
 | `SUMMARIZE_THRESHOLD/BATCH` | O | `60` / `40` | Compress oldest 40 when ≥60 rows |

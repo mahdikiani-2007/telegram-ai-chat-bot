@@ -18,6 +18,7 @@ from config import (
     BACKUP_HOUR_IRAN,
     DB_FILE,
     INSTAGRAM_COOKIES_FILE,
+    MINIAPP_PUBLIC_URL,
     YOUTUBE_COOKIES_FILE,
 )
 from services.backup import _backup_scheduler_loop
@@ -177,6 +178,16 @@ def main():
     userbot_thread = threading.Thread(target=_userbot_thread_main, daemon=True, name="userbot-mtproto")
     userbot_thread.start()
     log.info("Userbot thread launched (large-file delivery — no-op if TG_API_ID/TG_API_HASH unset).")
+
+    if MINIAPP_PUBLIC_URL:
+        from miniapp_server import start_miniapp_server
+
+        start_miniapp_server()
+        log.info("Mini App games server launched (public URL: %s).", MINIAPP_PUBLIC_URL)
+    else:
+        log.warning(
+            "Mini App games disabled: no public URL. Set MINIAPP_PUBLIC_URL or deploy "
+            "with RAILWAY_PUBLIC_DOMAIN (Railway target port must match MINIAPP_PORT).")
 
     ig_relay.start()
 

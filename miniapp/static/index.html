@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>بازی‌های L</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ================= lobby ================= -->
+  <section id="screen-lobby" class="screen">
+    <div class="header">
+      <div>
+        <div class="brand">🎮 بازی‌های L</div>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <span class="chip" id="lb-chip-scope" style="display:none">👥 <b>این گروه</b></span>
+        <span class="chip">🕵️ <b id="lb-chip-user">…</b></span>
+      </div>
+    </div>
+
+    <div class="grid">
+      <div class="card playable" id="btn-open-snake">
+        <div>
+          <div class="emoji">🐍</div>
+          <div class="name">مار نئون</div>
+          <div class="sub">۴ حالت، پاورآپ، کمبو</div>
+        </div>
+        <div class="best" data-best="snake_neo">🏆 رکورد شما: —</div>
+      </div>
+      <div class="card soon">
+        <div>
+          <div class="emoji">🔢</div>
+          <div class="name">۲۰۴۸</div>
+          <div class="sub">در حال ساخت در آزمایشگاه L</div>
+        </div>
+      </div>
+      <div class="card soon">
+        <div>
+          <div class="emoji">🔤</div>
+          <div class="name">وردل</div>
+          <div class="sub">در حال ساخت در آزمایشگاه L</div>
+        </div>
+      </div>
+      <div class="card" id="btn-board">
+        <div>
+          <div class="emoji">🏆</div>
+          <div class="name">رتبه‌بندی</div>
+          <div class="sub">جدول قهرمانان همه حالت‌ها</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">پرونده بازی‌ها</div>
+    <div class="lb-box" id="lobby-hint" style="padding:14px; font-size:12.5px; color:var(--dim); line-height:2.2;">
+      امتیازها بسته به اینکه از کجا بازی رو باز کنی ثبت می‌شن:<br>
+      👥 توی گروه → جدول همان گروه<br>
+      🕵️ توی پیوی → جدول سراسری
+    </div>
+  </section>
+
+  <!-- ================= leaderboard ================= -->
+  <section id="screen-board" class="screen">
+    <div class="topnav">
+      <button class="iconbtn" id="btn-back-lobby">→</button>
+      <div class="title">🏆 <span id="lb-title">رتبه‌بندی</span></div>
+    </div>
+    <div class="mode-chips">
+      <div class="mchip on" data-game="snake_neo">نئو</div>
+      <div class="mchip" data-game="snake_rush">راش</div>
+      <div class="mchip" data-game="snake_portals">پورتال</div>
+      <div class="mchip" data-game="snake_hunter">شکارچی</div>
+    </div>
+    <div class="lb-box" id="lb-rows"></div>
+  </section>
+
+  <!-- ================= mode select ================= -->
+  <section id="screen-mode" class="screen">
+    <div class="topnav">
+      <button class="iconbtn" id="btn-back-mode">→</button>
+      <div class="title">🐍 مار نئون — یک حالت رو انتخاب کن</div>
+    </div>
+    <div id="mode-list"></div>
+  </section>
+</div>
+
+<!-- ================= game ================= -->
+<div id="game-wrap" class="game-wrap">
+  <div class="hud">
+    <div>
+      <div class="score" id="hud-score">۰</div>
+      <div class="sub" id="hud-best">رکورد: —</div>
+    </div>
+    <div class="hud-right">
+      <div class="combo" id="hud-combo">کمبو ×۲</div>
+      <button class="iconbtn" id="btn-pause">⏸</button>
+      <button class="iconbtn" id="btn-sound">🔊</button>
+    </div>
+  </div>
+  <div class="pfx" id="fx-list"></div>
+  <canvas id="gameCanvas"></canvas>
+  <div class="dpad">
+    <button class="up" data-dir="up">▲</button>
+    <button class="left" data-dir="left">◀</button>
+    <button class="down" data-dir="down">▼</button>
+    <button class="right" data-dir="right">▶</button>
+  </div>
+</div>
+
+<!-- pause overlay -->
+<div id="fx-pause" class="overlay">
+  <div class="panel-box">
+    <h2>⏸ توقف</h2>
+    <div class="hint">هر وقت آماده بودی ادامه بده.</div>
+    <button class="btn primary" id="btn-resume">▶ ادامه</button>
+    <button class="btn ghost" id="btn-quit">خروج از بازی</button>
+  </div>
+</div>
+
+<!-- game over overlay -->
+<div id="fx-gameover" class="overlay">
+  <div class="panel-box">
+    <h2>💀 پرونده بسته شد</h2>
+    <div class="big-score" id="go-score">۰</div>
+    <div><span class="newbest" id="go-newbest">🏆 رکورد جدید!</span></div>
+    <div class="stat-row">
+      <div class="stat"><b id="go-best">۰</b><span>بهترین رکورد</span></div>
+      <div class="stat"><b id="go-rank">—</b><span>رتبه در جدول</span></div>
+    </div>
+    <div class="hint" id="go-saved">امتیازت ثبت شد ✅</div>
+    <button class="btn primary" id="btn-replay">🔄 یک دست دیگه</button>
+    <button class="btn ghost" id="btn-menu">منوی حالت‌ها</button>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="/app.js"></script>
+<script src="/games/snake.js"></script>
+</body>
+</html>

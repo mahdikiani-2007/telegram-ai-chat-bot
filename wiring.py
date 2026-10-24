@@ -10,6 +10,7 @@ from bots import admin_notifier, bot, bot_light
 from config import (
     DB_FILE,
     DROP_PENDING_UPDATES,
+    MINIAPP_PUBLIC_URL,
     OWNER_ID,
     SHUTDOWN_GRACE_SECONDS,
     TELEGRAM_UPLOAD_MAX_BYTES,
@@ -47,6 +48,7 @@ def register_all():
     import handlers.panel  # noqa: F401  (panel callbacks + input interceptor before tasks wizards)
     import handlers.tasks  # noqa: F401
     import handlers.basics  # noqa: F401
+    import handlers.miniapp  # noqa: F401  (/play — Mini App games)
     import handlers.surfaces  # noqa: F401
     import handlers.debate  # noqa: F401
     import handlers.medialink  # noqa: F401
@@ -121,6 +123,7 @@ def _sync_bot_commands():
         types.BotCommand("stats", "View real-time bot metrics and system performance (Admin only)"),
         types.BotCommand("digest", "Trigger the daily news digest on demand (Admin only)"),
         types.BotCommand("admin", "Open the broadcast and management panel (Admin only)"),
+        types.BotCommand("play", "بازی‌های مینی‌اپ — مار نئون و جدول رتبه‌بندی"),
         types.BotCommand("relay", "Instagram to Telegram post relay control (Admin only)"),
         types.BotCommand("stopall", "Halt all active debates instantly (Admin only)"),
     ]
@@ -141,6 +144,17 @@ def _sync_bot_commands():
         except Exception:
             # Menu sync is cosmetic — a failure here must never block startup.
             log.error("setMyCommands failed for bot %s", label, exc_info=True)
+
+    # Mini App menu button (private chats): "🎮 بازی‌ها" opens the games app
+    # straight from the chat menu. Cosmetic — failure never blocks startup.
+    if MINIAPP_PUBLIC_URL:
+        try:
+            bot.set_chat_menu_button(menu_button=types.MenuButtonWebApp(
+                type="web_app", text="🎮 بازی‌ها",
+                web_app=types.WebAppInfo(url=MINIAPP_PUBLIC_URL)))
+            log.info("Mini App menu button set for bot L (%s).", MINIAPP_PUBLIC_URL)
+        except Exception:
+            log.error("set_chat_menu_button failed — /play still works.", exc_info=True)
 
 def _ensure_polling_mode(bot_instance):
     """Delete any webhook so getUpdates polling receives updates. The

@@ -372,7 +372,26 @@ class ChatRepository:
                     last_failure_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     last_failure_date TEXT
                 )
-            """)
+                """)
+            # ---- Mini App games: per-scope score boards. scope_key is
+            # 'global' (private opens) or 'g<chat_id>' (group opens via the
+            # t.me startapp URL button) — one row per (scope, user, game),
+            # best-only updates with a plays counter.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS miniapp_scores (
+                    scope_key TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    game TEXT NOT NULL,
+                    best INTEGER NOT NULL DEFAULT 0,
+                    plays INTEGER NOT NULL DEFAULT 0,
+                    last_name TEXT NOT NULL DEFAULT '',
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (scope_key, user_id, game)
+                )
+                """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_miniapp_scores_board "
+                "ON miniapp_scores(scope_key, game, best DESC)")
             for ddl in (
                 "ALTER TABLE digest_history ADD COLUMN profile_key TEXT NOT NULL DEFAULT 'standard'",
                 "ALTER TABLE digest_unreachable ADD COLUMN last_failure_date TEXT",
@@ -1392,6 +1411,76 @@ class ChatRepository:
             "SELECT consec_failures, last_failure_at FROM digest_unreachable WHERE chat_id = ?",
             (str(chat_id),)).fetchone()
         return (int(row[0]), str(row[1])) if row else (0, "")
+
+    # =========================
+    # Mini App games: score store (best-only upsert, per-scope leaderboards)
+    # =========================
+    def upsert_miniapp_score(self, scope_key, user_id, game, score, display_name=""):
+        """Record one finished run: plays increments on EVERY submit, best only
+        when the new score is higher, last_name refreshed. Returns
+        (best, is_new_best)."""
+        with self._write_lock:
+            conn = self._connect()
+            row = conn.execute(
+                "SELECT best FROM miniapp_scores "
+                "WHERE scope_key = ? AND user_id = ? AND game = ?",
+                (str(scope_key), int(user_id), str(game)),
+            ).fetchone()
+            prev_best = int(row[0]) if row else 0
+            is_new_best = int(score) > prev_best
+            new_best = max(prev_best, int(score))
+            conn.execute(
+                """INSERT INTO miniapp_scores
+                   (scope_key, user_id, game, best, plays, last_name, updated_at)
+                   VALUES (?, ?, ?, ?, 1, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(scope_key, user_id, game) DO UPDATE SET
+                     best = excluded.best,
+                     plays = miniapp_scores.plays + 1,
+                     last_name = excluded.last_name,
+                     updated_at = CURRENT_TIMESTAMP""",
+                (str(scope_key), int(user_id), str(game), new_best,
+                 str(display_name or "")[:64]),
+            )
+            conn.commit()
+            return new_best, is_new_best
+
+    def miniapp_leaderboard(self, scope_key, game, limit=20):
+        """Top rows of one board: (user_id, last_name, best, plays), best first."""
+        conn = self._connect()
+        return conn.execute(
+            "SELECT user_id, last_name, best, plays FROM miniapp_scores "
+            "WHERE scope_key = ? AND game = ? "
+            "ORDER BY best DESC, updated_at ASC LIMIT ?",
+            (str(scope_key), str(game), max(1, int(limit))),
+        ).fetchall()
+
+    def miniapp_user_rank(self, scope_key, user_id, game):
+        """(rank 1-based, best) of one user on one board; (None, 0) if absent."""
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT best FROM miniapp_scores "
+            "WHERE scope_key = ? AND user_id = ? AND game = ?",
+            (str(scope_key), int(user_id), str(game)),
+        ).fetchone()
+        if not row:
+            return None, 0
+        better = conn.execute(
+            "SELECT COUNT(*) FROM miniapp_scores "
+            "WHERE scope_key = ? AND game = ? AND best > ?",
+            (str(scope_key), str(game), int(row[0])),
+        ).fetchone()[0]
+        return better + 1, int(row[0])
+
+    def miniapp_scope_title(self, scope_key):
+        """Group display title for a g<chat_id> scope, '' when unknown/global."""
+        s = str(scope_key)
+        if not s.startswith("g") or not s[1:].lstrip("-").isdigit():
+            return ""
+        row = self._connect().execute(
+            "SELECT COALESCE(title, '') FROM known_chats WHERE chat_id = ?",
+            (s[1:],),
+        ).fetchone()
+        return row[0] if row else ""
 
     # ---- Per-user long-term facts (portable memory, chat-scoped) ----
     def add_user_facts(self, user_id, facts, source_chat_id="", visibility="private",

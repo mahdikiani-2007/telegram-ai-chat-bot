@@ -34,6 +34,7 @@
 | `panel_bans` | `user_id PK, reason, banned_by, created_at` (app-level bans; admins exempt) | panel Stage 2 | central gate `is_banned()` |
 | `panel_audit` | `id, admin_id, action, target, result, created_at` (pruned to newest 2000 on write) | `write_panel_audit` ← panel mutating actions | panel Audit viewer |
 | `panel_broadcasts` | `id, admin_id, target, content_type, total/sent/unreachable/failed/skipped_banned, status running\|done\|stopped\|interrupted, started/finished_at` (counters only — never content) | broadcast runner (progress + finish); startup marks leftovers `interrupted` | panel recent-runs list |
+| `miniapp_scores` | `(scope_key, user_id, game) PK, best, plays, last_name, updated_at` — `scope_key` = `global` or `g<chat_id>` (from signed `start_param`); best-only updates | Mini App API (`upsert_miniapp_score` on every finished run) | `/api/leaderboard` + `miniapp_user_rank` (games lobby/boards) |
 | `ig_relay_config` | `key PK, value` (`enabled, target_chat, threads` JSON) | `/relay on/off/target/thread` | `InstagramRelay.ready/get_target/get_threads` |
 | `ig_relay_seen` | `message_id PK, thread_id, attempts, done_at` (pruned to newest 2000) | relay poll loop (`seed_thread/record_attempt/mark_done`) | dedupe + retry counting |
 

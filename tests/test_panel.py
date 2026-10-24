@@ -1102,7 +1102,7 @@ def test_features_menu_states_exemption(monkeypatch):
         buttons = [b.text for row in fb.edits[-1][3]["reply_markup"].keyboard
                    for b in row]
         assert any(b.startswith("🔴 pic") for b in buttons)
-        assert sum(1 for b in buttons if b.startswith(("🟢", "🔴"))) == 11
+        assert sum(1 for b in buttons if b.startswith(("🟢", "🔴"))) == 12
     finally:
         ps.set_feature("pic", True)
 

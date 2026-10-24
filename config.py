@@ -181,6 +181,18 @@ IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "agnes-image-2.0-flash")
 VISION_MODEL = os.environ.get("VISION_MODEL", "agnes-3.0-flash")
 VISION_API_BASE = os.environ.get("VISION_API_BASE", AGNES_BASE)
 VISION_API_KEY = os.environ.get("VISION_API_KEY", AGNES_API_KEY)
+
+# =========================
+# Mini App (games) — HTML served by the bot process itself over stdlib
+# http.server; Telegram opens it as a Mini App via /play (web_app button in
+# private, t.me startapp URL button in groups) or the chat menu button.
+# =========================
+MINIAPP_PORT = int(os.environ.get("MINIAPP_PORT") or os.environ.get("PORT") or "8080")
+MINIAPP_PUBLIC_URL = (
+    os.environ.get("MINIAPP_PUBLIC_URL")
+    or (f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}"
+        if os.environ.get("RAILWAY_PUBLIC_DOMAIN") else "")
+).rstrip("/")
 # CHAT_API_BASE is a free multi-provider router (observed routing to
 # Mistral, likely others too); a 400 from one backend provider doesn't mean
 # the payload was bad, it means THAT provider is currently flaky — a retry

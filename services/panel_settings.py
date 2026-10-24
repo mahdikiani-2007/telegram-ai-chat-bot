@@ -153,7 +153,7 @@ def unban_uid(user_id):
 # =========================
 FEATURES = (
     "chat", "pic", "tr", "tldr", "instagram", "youtube",
-    "debate", "inline", "guest", "reminders", "relay",
+    "debate", "inline", "guest", "reminders", "relay", "miniapp",
 )
 
 

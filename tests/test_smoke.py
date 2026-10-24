@@ -20,7 +20,7 @@ EXPECTED_BOT_TABLES = {
     "messages", "summaries", "todos", "reminders", "known_chats",
     "group_members", "bot_media_messages", "sessions",
     "user_active_sessions", "digest_history", "user_facts",
-    "behavior_stats", "chat_log",
+    "behavior_stats", "chat_log", "miniapp_scores",
     "panel_settings", "panel_admins", "panel_bans", "panel_audit",
 }
 EXPECTED_RELAY_TABLES = {"ig_relay_config", "ig_relay_seen"}
@@ -73,8 +73,9 @@ def test_import_and_db_schema():
 
 HANDLER_MODULES_CANONICAL = [
     "handlers.guard", "handlers.admin", "handlers.tasks",
-    "handlers.basics", "handlers.surfaces", "handlers.debate",
-    "handlers.medialink", "handlers.memory_cmds", "handlers.chat",
+    "handlers.basics", "handlers.miniapp", "handlers.surfaces",
+    "handlers.debate", "handlers.medialink", "handlers.memory_cmds",
+    "handlers.chat",
 ]
 
 
@@ -107,9 +108,9 @@ def test_bot_objects_and_handler_counts():
         pytest.skip(f"handlers migration in progress ({len(done)}/{len(HANDLER_MODULES_CANONICAL)} modules)")
     n_msg = len(getattr(bots_mod.bot, "message_handlers", []))
     n_cb = len(getattr(bots_mod.bot, "callback_query_handlers", []))
-    # Digest-topics Stage A baseline (no LIGHT token): 27 message (+/reminders);
-    # callbacks 82 (+reminder delete) = 66 + group digest-mode switch + digest overview/groups/profile callbacks.
-    assert n_msg == 27, f"message handlers: {n_msg}"
+    # Baseline (no LIGHT token): 28 message handlers (27 + /play miniapp);
+    # callbacks 82 (/play registers no callbacks).
+    assert n_msg == 28, f"message handlers: {n_msg}"
     assert n_cb == 82, f"callback handlers: {n_cb}"
     assert getattr(bots_mod, "bot_light", None) is None  # no LIGHT token in smoke env
 
