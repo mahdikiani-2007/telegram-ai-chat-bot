@@ -1,6 +1,6 @@
 > This file is the authoritative map of the codebase. Read it BEFORE exploring code. Keep it updated after EVERY code change.
 
-`Last verified:` 2026-10-24 — photo-understanding fix: photo turns (chat photos + `/tr` photos) stream through a dedicated vision client (`ai.agnes_vision`, `VISION_MODEL/API_BASE/API_KEY` env, default Agnes hub `agnes-3.0-flash`) because the chat router doesn't deliver images to its model; `tools/vision_check.py` probe added; `tests/test_vision_routing.py` (9 tests).
+`Last verified:` 2026-10-24 — repository documentation refresh: added English/Persian READMEs covering the current modular Railway/Docker layout, commands, configuration, persistence, security, and validation.
 
 Detail files (read when the summary below is not enough): `docs/map/modules.md` (per-file API), `docs/map/data.md` (tables + session/FSM state), `docs/map/integrations.md` (external APIs + quirks), `docs/map/config.md` (every env var + message/keyboard locations).
 
@@ -33,6 +33,7 @@ Language/runtime: **Python 3.13** (Docker `python:3.13-slim`). Telegram lib: **p
 - `Dockerfile` — 2-stage: builds `telegram-bot-api` from pinned source + deno + ffmpeg + `requirements.txt`.
 - `requirements.txt` — pinned: `pyTelegramBotAPI==4.36.0 requests urllib3 yt-dlp imageio-ffmpeg instagrapi`.
 - `RESTORE.md` — backup/restore runbook. `.env` — secrets (gitignored, never commit). `.gitignore` — `__pycache__ .env .pytest_cache data/`.
+- `README.md` + `README-fa.md` — current English and Persian setup, feature, deployment, and operations documentation.
 - `data/` — runtime only (gitignored): `chat_history.db`, `ig/yt_downloads/`, `backups/`, `botapi/`, session files.
 - `PROJECT_MAP.md` + `docs/map/` — this index + detail files.
 - `AGENTS.md` — agent rules: read the map first, run the update skill after changes.
