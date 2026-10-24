@@ -172,6 +172,15 @@ CHAT_API_BASE = os.environ.get("CHAT_API_BASE", "https://opencode.ai/zen/v1")
 AGNES_BASE = os.environ.get("AGNES_BASE", "https://apihub.agnes-ai.com/v1")
 CHAT_MODEL = os.environ.get("CHAT_MODEL", "mimo-v2.5-free")
 IMAGE_MODEL = os.environ.get("IMAGE_MODEL", "agnes-image-2.0-flash")
+# Vision (photo understanding) runs on a DEDICATED endpoint, not the chat
+# router: the deployed chat router (a proxy whose "model" alias is opaque)
+# answers "I can't see" for images even though multimodal providers exist —
+# verified live 2026-10-23 (agnes-3.0-flash correctly described a test image,
+# the chat router's alias did not receive it). Defaults to the Agnes hub with
+# the same key /pic already uses, so photo turns work with zero new env vars.
+VISION_MODEL = os.environ.get("VISION_MODEL", "agnes-3.0-flash")
+VISION_API_BASE = os.environ.get("VISION_API_BASE", AGNES_BASE)
+VISION_API_KEY = os.environ.get("VISION_API_KEY", AGNES_API_KEY)
 # CHAT_API_BASE is a free multi-provider router (observed routing to
 # Mistral, likely others too); a 400 from one backend provider doesn't mean
 # the payload was bad, it means THAT provider is currently flaky — a retry

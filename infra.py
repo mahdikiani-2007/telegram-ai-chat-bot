@@ -11,6 +11,7 @@ from config import (
     LOCAL_BOT_API_URL,
     TELEGRAM_API_BASE_URL,
     TELEGRAM_FILE_BASE_URL,
+    VISION_API_KEY,
 )
 
 log = logging.getLogger("L-bot")
@@ -61,5 +62,12 @@ def _chat_headers():
 def _image_headers():
     return {
         "Authorization": f"Bearer {IMAGE_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+
+def _vision_headers():
+    return {
+        "Authorization": f"Bearer {VISION_API_KEY}",
         "Content-Type": "application/json",
     }

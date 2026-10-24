@@ -9,7 +9,7 @@ import traceback
 
 from telebot import types
 
-from ai import agnes
+from ai import agnes, agnes_vision
 from bots import admin_notifier, bot, bot_light
 from config import (
     ADMIN_ID,
@@ -643,10 +643,12 @@ def handle_translate(message):
         bot.send_chat_action(message.chat.id, "typing")
         placeholder = _safe_reply_to(bot, message, "⏳ در حال ترجمه...")
 
-        # Register for /stop cancellation, then stream.
+        # Register for /stop cancellation, then stream. Photo translation
+        # needs the vision client (chat router can't see images).
         req_entry = _register_active_request(message.chat.id, message.from_user.id, placeholder.message_id)
         full_text, status_err, msg_ids = stream_to_telegram(
-            message, messages, placeholder.message_id, request_entry=req_entry
+            message, messages, placeholder.message_id, request_entry=req_entry,
+            client=agnes_vision if is_photo else None,
         )
         _consume_active_request(req_entry)  # always consume, cancel or not
 

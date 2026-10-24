@@ -5,8 +5,16 @@ import time
 import requests
 import urllib3
 
-from config import AGNES_BASE, CHAT_API_BASE, CHAT_MODEL, CHAT_RETRY_ATTEMPTS, IMAGE_MODEL
-from infra import HTTP, _chat_headers, _image_headers
+from config import (
+    AGNES_BASE,
+    CHAT_API_BASE,
+    CHAT_MODEL,
+    CHAT_RETRY_ATTEMPTS,
+    IMAGE_MODEL,
+    VISION_API_BASE,
+    VISION_MODEL,
+)
+from infra import HTTP, _chat_headers, _image_headers, _vision_headers
 
 log = logging.getLogger("L-bot")
 
@@ -16,13 +24,17 @@ log = logging.getLogger("L-bot")
 # =========================
 class AgnesClient:
     def __init__(
-        self, session, chat_base, image_base, chat_headers_fn, image_headers_fn
+        self, session, chat_base, image_base, chat_headers_fn, image_headers_fn,
+        chat_model=None,
     ):
         self.session = session
         self.chat_base = chat_base
         self.image_base = image_base
         self.chat_headers_fn = chat_headers_fn
         self.image_headers_fn = image_headers_fn
+        # Per-instance model: the vision client points at a different endpoint
+        # AND a different model than the plain chat client (see config VISION_*).
+        self.chat_model = chat_model or CHAT_MODEL
 
     def _chat_completion_with_retry(self, payload, timeout):
         """Shared retry helper for non-streaming /chat/completions calls
@@ -63,7 +75,7 @@ class AgnesClient:
             + text_block
         )
         return self._chat_completion_with_retry(
-            {"model": CHAT_MODEL, "messages": [{"role": "user", "content": prompt}], "stream": False},
+            {"model": self.chat_model, "messages": [{"role": "user", "content": prompt}], "stream": False},
             timeout=120,
         )
 
@@ -90,7 +102,7 @@ class AgnesClient:
         Every raw line from the network is explicitly decoded as UTF-8 so that
         Persian/multi-byte characters are never corrupted (mojibake)."""
         payload = {
-            "model": CHAT_MODEL,
+            "model": self.chat_model,
             "messages": messages,
             "stream": True,
         }
@@ -174,7 +186,7 @@ class AgnesClient:
     def generate(self, messages):
         """One-shot non-streaming chat call. Returns text or '' on failure."""
         return self._chat_completion_with_retry(
-            {"model": CHAT_MODEL, "messages": messages, "stream": False},
+            {"model": self.chat_model, "messages": messages, "stream": False},
             timeout=180,
         )
 
@@ -194,3 +206,9 @@ class AgnesClient:
 
 
 agnes = AgnesClient(HTTP, CHAT_API_BASE, AGNES_BASE, _chat_headers, _image_headers)
+
+# Vision client: same class, dedicated endpoint/model/key (see config VISION_*).
+# Photo turns (chat photos, /tr photos) stream through THIS client because the
+# chat router above does not deliver images to its model (verified live).
+agnes_vision = AgnesClient(HTTP, VISION_API_BASE, AGNES_BASE, _vision_headers, _image_headers,
+                           chat_model=VISION_MODEL)

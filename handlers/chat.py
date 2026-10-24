@@ -5,7 +5,7 @@ import re
 import time
 import traceback
 
-from ai import agnes
+from ai import agnes, agnes_vision
 from bots import (
     admin_notifier,
     bot,
@@ -282,10 +282,13 @@ def handle_all_messages(message):
         else:
             messages.append({"role": "user", "content": content_structure})
 
-        # Register for /stop cancellation, then stream.
+        # Register for /stop cancellation, then stream. Photo turns go through
+        # the dedicated vision client — the chat router does not deliver
+        # images to its model (it answers "I can't see"), verified live.
         req_entry = _register_active_request(message.chat.id, message.from_user.id, placeholder.message_id)
         full_text, status_err, msg_ids = stream_to_telegram(
-            message, messages, placeholder.message_id, request_entry=req_entry
+            message, messages, placeholder.message_id, request_entry=req_entry,
+            client=agnes_vision if message.content_type == "photo" else None,
         )
         _consume_active_request(req_entry)  # always consume, cancel or not
 

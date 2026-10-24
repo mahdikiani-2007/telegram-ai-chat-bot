@@ -51,9 +51,11 @@ def _safe_reply_to(bot_instance, message, text, **kwargs):
 # =========================
 # Streaming helper
 # =========================
-def stream_to_telegram(message, messages, placeholder_id, request_entry=None):
-    """Wrapper for the L bot. Returns (final_full_text, status_error, msg_ids)."""
-    return stream_to_telegram_generic(bot, message, messages, placeholder_id, request_entry=request_entry)
+def stream_to_telegram(message, messages, placeholder_id, request_entry=None, client=None):
+    """Wrapper for the L bot. Returns (final_full_text, status_error, msg_ids).
+    `client` overrides the LLM client (photo turns pass the vision client)."""
+    return stream_to_telegram_generic(bot, message, messages, placeholder_id,
+                                      request_entry=request_entry, client=client)
 
 def finalize_message(message, placeholder_id, full_text, msg_ids=None):
     """Wrapper for the L bot."""
@@ -207,7 +209,8 @@ def _handle_stop_generic(bot_instance, message):
         except Exception:
             pass
 
-def stream_to_telegram_generic(bot_instance, message, messages, placeholder_id, request_entry=None):
+def stream_to_telegram_generic(bot_instance, message, messages, placeholder_id, request_entry=None,
+                               client=None):
     """Consume the streaming LLM response and live-edit the Telegram message.
     Works with any telebot instance.
 
@@ -215,6 +218,10 @@ def stream_to_telegram_generic(bot_instance, message, messages, placeholder_id, 
     the streaming loop checks THIS entry's cancel flag (not whatever happens
     to be the latest entry for this user), so an overlapping second message
     can't hijack or disable /stop for the first one.
+
+    `client` overrides the LLM client for this stream (default: module-level
+    `agnes`). Photo turns pass the vision client (ai.agnes_vision) because the
+    chat router does not deliver images to its model.
 
     Returns (final_full_text, status_error, message_ids) where message_ids is a
     list of all (chat_id, message_id) tuples that were used during streaming.
@@ -235,7 +242,7 @@ def stream_to_telegram_generic(bot_instance, message, messages, placeholder_id, 
         return (len(msg_ids) - 1) * MAX_MSG
 
     try:
-        for kind, value in agnes.stream_chat(messages):
+        for kind, value in (client or agnes).stream_chat(messages):
             if kind == "status":
                 got_status_error = value
                 break

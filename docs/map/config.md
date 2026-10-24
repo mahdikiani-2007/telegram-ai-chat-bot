@@ -16,9 +16,12 @@
 | `DROP_PENDING_UPDATES` | O | `false` | `1/true/yes` = drop Telegram queue on (re)start (one-time escape hatch) |
 | `SHUTDOWN_GRACE_SECONDS` | O | `20` | In-flight drain before WAL checkpoint + exit (fit under platform SIGTERM grace) |
 | `CHAT_API_BASE` | O | `https://opencode.ai/zen/v1` | Chat completions endpoint |
-| `AGNES_BASE` | O | `https://apihub.agnes-ai.com/v1` | Image endpoint base |
+| `AGNES_BASE` | O | `https://apihub.agnes-ai.com/v1` | Image endpoint base (+ vision default) |
 | `CHAT_MODEL` | O | `mimo-v2.5-free` | Chat model name |
 | `IMAGE_MODEL` | O | `agnes-image-2.0-flash` | Image model name |
+| `VISION_MODEL` | O | `agnes-3.0-flash` | Photo-understanding model — photo turns bypass the chat router (it doesn't deliver images); probe with `tools/vision_check.py` |
+| `VISION_API_BASE` | O | falls back to `AGNES_BASE` | Vision completions endpoint base |
+| `VISION_API_KEY` | O | falls back to `AGNES_API_KEY` | Vision Bearer key (header built in `infra.py`) |
 | `CHAT_RETRY_ATTEMPTS` | O | `2` | Extra attempts *before* streaming starts |
 | `RECENT_HISTORY` | O | `18` | Verbatim turns per LLM context |
 | `SUMMARIZE_THRESHOLD/BATCH` | O | `60` / `40` | Compress oldest 40 when ≥60 rows |
