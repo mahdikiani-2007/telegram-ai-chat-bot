@@ -1,0 +1,2013 @@
+import sqlite3
+import threading
+import re
+from datetime import datetime, timedelta, timezone
+
+from config import DB_FILE, DIGEST_MEMORY_DAYS
+from timeutil import iran_now
+
+
+def sanitize_digest_topic(value):
+    """Normalize profile topics before storage and prompt embedding."""
+    text = str(value or "")
+    text = re.sub(r"[\x00-\x1f\x7f]", " ", text)
+    text = text.replace("<", "").replace(">", "")
+    return " ".join(text.split())
+
+
+# =========================
+# Database Layer (thread-safe repository, thread-local connection pool)
+# =========================
+class ChatRepository:
+    """All SQLite access.
+
+    A write lock still serializes mutations (SQLite only allows one writer
+    at a time regardless), but reads/writes now reuse ONE persistent
+    connection per worker thread (via threading.local) instead of opening a
+    fresh connection on every single call. With telebot's 8 worker threads
+    this caps the bot at 8 live connections total instead of thousands of
+    short-lived open/close cycles.
+    """
+
+    def __init__(self, db_file):
+        self.db_file = db_file
+        self._write_lock = threading.Lock()
+        self._local = threading.local()
+        self._init()
+
+    def _connect(self):
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = sqlite3.connect(self.db_file, timeout=30, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            self._local.conn = conn
+        return conn
+
+    def _init(self):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT,
+                    role TEXT,
+                    text TEXT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS summaries (
+                    chat_id TEXT PRIMARY KEY,
+                    summary TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chat_id ON messages(chat_id, id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp)"
+            )
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS maintenance_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            # ---- Todo and Reminder systems ----
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS todos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    creator_id INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    priority TEXT DEFAULT 'Normal',
+                    category TEXT DEFAULT 'General',
+                    status INTEGER DEFAULT 0,
+                    deadline REAL DEFAULT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_todos_chat_status
+                ON todos(chat_id, status)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    creator_id INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    mention_type TEXT DEFAULT 'me',
+                    recurrence TEXT DEFAULT 'none',
+                    trigger_time REAL NOT NULL,
+                    status INTEGER DEFAULT 0,
+                    deadline REAL DEFAULT NULL
+                )
+            """)
+            # Safely add columns if the table already existed without them.
+            for ddl in (
+                "ALTER TABLE todos ADD COLUMN deadline REAL DEFAULT NULL",
+                "ALTER TABLE todos ADD COLUMN recurrence TEXT DEFAULT 'none'",
+                "ALTER TABLE todos ADD COLUMN assignee_id INTEGER DEFAULT NULL",
+                "ALTER TABLE todos ADD COLUMN assignee_username TEXT DEFAULT NULL",
+                "ALTER TABLE reminders ADD COLUMN deadline REAL DEFAULT NULL",
+                "ALTER TABLE reminders ADD COLUMN assignee_id INTEGER DEFAULT NULL",
+                "ALTER TABLE reminders ADD COLUMN assignee_username TEXT DEFAULT NULL",
+                # Crash-safe dispatch state (Phase 4.3): persistent claim +
+                # attempt counters replace the old in-memory sets, so a
+                # restart can neither double-fire nor lose track of retries.
+                "ALTER TABLE reminders ADD COLUMN attempts INTEGER DEFAULT 0",
+                "ALTER TABLE reminders ADD COLUMN claimed_at REAL DEFAULT NULL",
+                "ALTER TABLE reminders ADD COLUMN claim_token TEXT DEFAULT NULL",
+                "ALTER TABLE todos ADD COLUMN attempts INTEGER DEFAULT 0",
+                "ALTER TABLE todos ADD COLUMN claimed_at REAL DEFAULT NULL",
+                "ALTER TABLE todos ADD COLUMN claim_token TEXT DEFAULT NULL",
+            ):
+                try:
+                    conn.execute(ddl)
+                except Exception:
+                    pass  # Column already exists
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_reminders_trigger
+                ON reminders(status, trigger_time)
+            """)
+
+            # ---- Feature 1: real broadcast targets (replaces the mock DB) ----
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS known_chats (
+                    chat_id TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    username TEXT,
+                    title TEXT,
+                    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            # ---- Group-mention workaround: per-member tracking within a group.
+            # known_chats is keyed by chat_id (one row per CHAT), which cannot
+            # hold multiple members of the same group. This second table adds
+            # the per-member granularity actually needed to "tag everyone".
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS group_members (
+                    chat_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT,
+                    first_name TEXT,
+                    last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, user_id)
+                )
+            """)
+            # ---- Messages the bot sent that are just re-uploaded media
+            # (Instagram downloads, etc.) rather than a real conversational
+            # reply. Replying to one of these should never reach the AI chat
+            # pipeline — the reply is about the media, not something the bot
+            # said, so answering it is both irrelevant and a wasted API call.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS bot_media_messages (
+                    chat_id TEXT NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    kind TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, message_id)
+                )
+            """)
+            # ---- Per-user chat sessions (private chats only). Each session
+            # is a separate memory_id namespace (messages + rolling summary).
+            # active_session_id in user_sessions says which one new messages
+            # flow into; NULL means "use the plain user_id memory" (the
+            # pre-sessions behaviour). Active_session rows are stored
+            # separately from the sessions themselves so /session delete
+            # never orphans the pointer.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (session_id, user_id)
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sessions_user
+                ON sessions(user_id, created_at)
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_active_sessions (
+                    user_id INTEGER PRIMARY KEY,
+                    active_session_id TEXT
+                )
+            """)
+            # ---- Digest memory: the bullet lines of each day's digest, kept
+            # 7 days, injected into the write-up prompt so the model filters
+            # out news it already reported (it was repeating stories daily).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS digest_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    digest_date TEXT NOT NULL,
+                    line TEXT NOT NULL
+                )
+            """)
+            # ---- Schema migrations for tables that gained columns after
+            # first deploy. CREATE TABLE IF NOT EXISTS skips pre-existing
+            # tables, so new columns would never appear on an old volume —
+            # every query touching them would then fail with
+            # "no such column" (the bot looked alive but /myfacts, the
+            # behavior profiler, and /tldr were silently broken).
+            for ddl in (
+                "ALTER TABLE user_facts ADD COLUMN source_chat_id TEXT NOT NULL DEFAULT ''",
+                "ALTER TABLE user_facts ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private'",
+            ):
+                try:
+                    conn.execute(ddl)
+                except Exception:
+                    pass  # column already exists
+            # Create tables that may be brand-new anyway (no-op if present).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_facts (
+                    user_id INTEGER NOT NULL,
+                    fact TEXT NOT NULL,
+                    source_chat_id TEXT NOT NULL DEFAULT '',
+                    visibility TEXT NOT NULL DEFAULT 'private',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (user_id, fact)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS behavior_stats (
+                    chat_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    stat_date TEXT NOT NULL,
+                    msg_count INTEGER DEFAULT 0,
+                    total_chars INTEGER DEFAULT 0,
+                    reply_count INTEGER DEFAULT 0,
+                    link_count INTEGER DEFAULT 0,
+                    question_count INTEGER DEFAULT 0,
+                    media_count INTEGER DEFAULT 0,
+                    sample_lines TEXT DEFAULT '',
+                    last_hour INTEGER DEFAULT 0,
+                    PRIMARY KEY (chat_id, user_id, stat_date)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS chat_log (
+                    chat_id TEXT NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    first_name TEXT DEFAULT '',
+                    text TEXT NOT NULL,
+                    ts DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chat_log_chat_ts
+                ON chat_log(chat_id, ts)
+            """)
+            # ---- Admin control panel (Stage 1): runtime settings, DB-managed
+            # admins, app-level bans, audit trail. Same self-migrating
+            # convention as the rest of _init — CREATE TABLE IF NOT EXISTS,
+            # so existing volumes gain these on next boot with no downtime.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS panel_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS panel_admins (
+                    user_id INTEGER PRIMARY KEY,
+                    added_by INTEGER NOT NULL,
+                    added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS panel_bans (
+                    user_id INTEGER PRIMARY KEY,
+                    reason TEXT NOT NULL DEFAULT '',
+                    banned_by INTEGER NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS panel_audit (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    target TEXT NOT NULL DEFAULT '',
+                    result TEXT NOT NULL DEFAULT '',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_chat_log_chat_ts
+                ON chat_log(chat_id, ts)
+            """)
+            # ---- Stage 2C: per-creator indexes for reset scoping ----
+            for _idx_ddl in (
+                "CREATE INDEX IF NOT EXISTS idx_todos_creator ON todos(creator_id)",
+                "CREATE INDEX IF NOT EXISTS idx_todos_assignee ON todos(assignee_id)",
+                "CREATE INDEX IF NOT EXISTS idx_reminders_creator ON reminders(creator_id)",
+                "CREATE INDEX IF NOT EXISTS idx_reminders_assignee ON reminders(assignee_id)",
+            ):
+                try:
+                    conn.execute(_idx_ddl)
+                except Exception:
+                    pass
+            # ---- Stage 3A: broadcast runs (progress counters only — message
+            # content is NEVER logged or stored here).
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS panel_broadcasts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER NOT NULL,
+                    target TEXT NOT NULL DEFAULT '',
+                    content_type TEXT NOT NULL DEFAULT '',
+                    total INTEGER NOT NULL DEFAULT 0,
+                    sent INTEGER NOT NULL DEFAULT 0,
+                    unreachable INTEGER NOT NULL DEFAULT 0,
+                    failed INTEGER NOT NULL DEFAULT 0,
+                    skipped_banned INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    finished_at DATETIME
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_panel_broadcasts_status
+                ON panel_broadcasts(status)
+            """)
+            # ---- Digest topics (per-group modes, profiles, ledger) ----
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS digest_group_config (
+                    chat_id TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL DEFAULT 'standard',
+                    profile_id INTEGER,
+                    updated_by INTEGER NOT NULL DEFAULT 0,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS digest_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    created_by INTEGER NOT NULL DEFAULT 0,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    previewed_at DATETIME
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS digest_deliveries (
+                    chat_id TEXT NOT NULL,
+                    digest_date TEXT NOT NULL,
+                    profile_key TEXT NOT NULL DEFAULT 'standard',
+                    status TEXT NOT NULL DEFAULT 'sent',
+                    error TEXT NOT NULL DEFAULT '',
+                    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, digest_date)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS digest_unreachable (
+                    chat_id TEXT PRIMARY KEY,
+                    consec_failures INTEGER NOT NULL DEFAULT 0,
+                    last_failure_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    last_failure_date TEXT
+                )
+            """)
+            for ddl in (
+                "ALTER TABLE digest_history ADD COLUMN profile_key TEXT NOT NULL DEFAULT 'standard'",
+                "ALTER TABLE digest_unreachable ADD COLUMN last_failure_date TEXT",
+            ):
+                try:
+                    conn.execute(ddl)
+                except Exception:
+                    pass  # column already exists
+            conn.commit()
+
+    # ---- writes ----
+    def save_message(self, chat_id, role, text):
+        """Insert one history row and return its primary-key id, so callers
+        can surgically remove exactly this row later (see delete_message_by_id)."""
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "INSERT INTO messages (chat_id, role, text) VALUES (?, ?, ?)",
+                (str(chat_id), role, text),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def mark_bot_media_message(self, chat_id, message_id, kind="instagram"):
+        """Record a message the bot sent that's just re-uploaded media, so
+        should_skip_bot_media_reply() can recognize replies to it later."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT OR IGNORE INTO bot_media_messages (chat_id, message_id, kind) VALUES (?, ?, ?)",
+                (str(chat_id), int(message_id), kind),
+            )
+            conn.commit()
+
+    def is_bot_media_message(self, chat_id, message_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT 1 FROM bot_media_messages WHERE chat_id = ? AND message_id = ? LIMIT 1",
+            (str(chat_id), int(message_id)),
+        ).fetchone()
+        return row is not None
+
+    def cleanup_old_bot_media_messages(self, max_age_days=60):
+        """Bound table growth — nobody's realistically replying to a
+        two-month-old Instagram download, and this table has no other GC."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "DELETE FROM bot_media_messages WHERE created_at < datetime('now', ?)",
+                (f"-{int(max_age_days)} days",),
+            )
+            conn.commit()
+
+    def clear_chat(self, chat_id):
+        """Wipes a chat's CONVERSATIONAL memory (messages + rolling summary).
+
+        Deliberately does NOT touch user_facts: long-term facts and the
+        behavioral profiles are durable knowledge about PEOPLE (how they
+        talk, what they like), not about this chat's conversation — wiping
+        them on /reset would erase personality knowledge the user wants
+        kept. Users who want facts gone have explicit control: /forget all."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("DELETE FROM messages WHERE chat_id = ?", (str(chat_id),))
+            conn.execute("DELETE FROM summaries WHERE chat_id = ?", (str(chat_id),))
+            conn.commit()
+
+    def delete_message_by_id(self, message_id):
+        """Remove exactly ONE saved history row by primary key. Used by the
+        /stop and stream-error cleanup so an aborted turn deletes its OWN
+        row: delete_last_user_message removed the newest user row of the chat
+        scope, which in busy groups could belong to a different user whose
+        turn started while the aborted one was still streaming. Returns True
+        if a row was removed."""
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM messages WHERE id = ?", (int(message_id),)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def save_summary(self, chat_id, summary, prune_ids):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                """INSERT INTO summaries (chat_id, summary, updated_at)
+                   VALUES (?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(chat_id) DO UPDATE SET
+                     summary=excluded.summary, updated_at=CURRENT_TIMESTAMP""",
+                (str(chat_id), summary),
+            )
+            if prune_ids:
+                qmarks = ",".join("?" * len(prune_ids))
+                conn.execute(
+                    f"DELETE FROM messages WHERE id IN ({qmarks})",
+                    tuple(prune_ids),
+                )
+            conn.commit()
+
+    # ---- reads ----
+    def get_history(self, chat_id, limit=8):
+        conn = self._connect()
+        rows = conn.execute(
+            """SELECT role, text FROM (
+                   SELECT role, text, id FROM messages
+                   WHERE chat_id = ? ORDER BY id DESC LIMIT ?
+               ) ORDER BY id ASC""",
+            (str(chat_id), limit),
+        ).fetchall()
+        history = []
+        for role, text in rows:
+            api_role = "assistant" if role == "model" else role
+            history.append({"role": api_role, "content": text})
+        return history
+
+    def get_summary(self, chat_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT summary FROM summaries WHERE chat_id = ?", (str(chat_id),)
+        ).fetchone()
+        return row[0] if row else ""
+
+    def count_messages(self, chat_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE chat_id = ?", (str(chat_id),)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def fetch_oldest_for_summary(self, chat_id, batch):
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id, role, text FROM messages WHERE chat_id = ? "
+            "ORDER BY id ASC LIMIT ?",
+            (str(chat_id), batch),
+        ).fetchall()
+        return rows
+
+    # =========================
+    # Todo CRUD
+    # =========================
+    def add_todo(self, chat_id, creator_id, text, priority, category, deadline=None,
+                 recurrence="none", assignee_id=None, assignee_username=None):
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                """INSERT INTO todos
+                   (chat_id, creator_id, text, priority, category, deadline,
+                    recurrence, assignee_id, assignee_username)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(chat_id), int(creator_id), text, priority, category, deadline,
+                 recurrence or "none", assignee_id, assignee_username),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def get_active_todos(self, chat_id):
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id, text, priority, category, creator_id, deadline, "
+            "recurrence, assignee_id, assignee_username FROM todos "
+            "WHERE chat_id = ? AND status = 0 ORDER BY id ASC",
+            (str(chat_id),),
+        ).fetchall()
+        return rows
+
+    def get_expired_todos(self, chat_id):
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id, text, priority, category, creator_id, deadline, "
+            "recurrence, assignee_id, assignee_username FROM todos "
+            "WHERE chat_id = ? AND status = 2 ORDER BY id DESC LIMIT 10",
+            (str(chat_id),),
+        ).fetchall()
+        return rows
+
+    def mark_todo_done(self, todo_id):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("UPDATE todos SET status = 1 WHERE id = ?", (int(todo_id),))
+            conn.commit()
+
+    def mark_todo_expired(self, todo_id):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("UPDATE todos SET status = 2 WHERE id = ?", (int(todo_id),))
+            conn.commit()
+
+    def update_todo_deadline(self, todo_id, expected_deadline, new_deadline):
+        """Conditional roll-forward for recurring-todo expiry alerts: only
+        advances when the deadline still holds the value the dispatcher saw.
+        Returns rows updated (0 = resolved concurrently — skip). Also used
+        for plain deadline edits only through this guarded path."""
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "UPDATE todos SET deadline = ?, attempts = 0, claimed_at = NULL, "
+                "claim_token = NULL WHERE id = ? AND deadline = ? AND status = 0",
+                (float(new_deadline), int(todo_id), float(expected_deadline)),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def claim_due_todos(self, now_epoch, token, stale_seconds=300, exclude_banned=True):
+        """Atomically claim due active todos for this dispatch batch.
+        Returns [(id, deadline)] owned by `token`; concurrent batches and
+        fresh claims are excluded, stale ones (>stale_seconds) refire.
+        Banned creators are excluded via a NOT IN subquery (never a bound
+        list — a large ban table can't break the query or stall dispatch),
+        but ONLY for their own private chat (chat_id = creator): rows they
+        created in groups keep firing to the group. Unclaimed rows sit
+        untouched (no retry spin, no attempts, no alerts) and deliver after
+        unban since they stay due."""
+        now = float(now_epoch)
+        ban_filter = (
+            "AND NOT (chat_id = CAST(creator_id AS TEXT) "
+            "AND creator_id IN (SELECT user_id FROM panel_bans))"
+            if exclude_banned else ""
+        )
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE todos SET claimed_at = ?, claim_token = ? "
+                "WHERE status = 0 AND deadline IS NOT NULL AND deadline <= ? "
+                "AND (claimed_at IS NULL OR claimed_at < ?) "
+                f"{ban_filter}",
+                (now, str(token), now, now - int(stale_seconds)),
+            )
+            rows = conn.execute(
+                "SELECT id, deadline FROM todos WHERE claim_token = ? "
+                "ORDER BY deadline ASC",
+                (str(token),),
+            ).fetchall()
+            conn.commit()
+            return rows
+
+    def release_todo_claim(self, todo_id):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE todos SET claimed_at = NULL, claim_token = NULL WHERE id = ?",
+                (int(todo_id),),
+            )
+            conn.commit()
+
+    def note_todo_failure(self, todo_id):
+        """Record one permanent dispatch failure; releases the claim so the
+        next cycle retries. Returns the new attempt count."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE todos SET attempts = attempts + 1, claimed_at = NULL, "
+                "claim_token = NULL WHERE id = ?",
+                (int(todo_id),),
+            )
+            row = conn.execute(
+                "SELECT attempts FROM todos WHERE id = ?", (int(todo_id),)
+            ).fetchone()
+            conn.commit()
+            return int(row[0]) if row else 0
+
+    def delete_todo(self, todo_id):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("DELETE FROM todos WHERE id = ?", (int(todo_id),))
+            conn.commit()
+
+    def get_todo_by_id(self, todo_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT id, chat_id, creator_id, text, priority, category, status, "
+            "deadline, recurrence, assignee_id, assignee_username "
+            "FROM todos WHERE id = ?",
+            (int(todo_id),),
+        ).fetchone()
+        return row
+
+    # =========================
+    # Reminder CRUD
+    # =========================
+    def add_reminder(self, chat_id, creator_id, text, mention_type, recurrence, trigger_time,
+                      assignee_id=None, assignee_username=None):
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                """INSERT INTO reminders
+                   (chat_id, creator_id, text, mention_type, recurrence, trigger_time,
+                    assignee_id, assignee_username)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (str(chat_id), int(creator_id), text, mention_type, recurrence,
+                 float(trigger_time), assignee_id, assignee_username),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def snooze_reminder(self, reminder_id, new_trigger_time):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE reminders SET trigger_time = ?, claimed_at = NULL, "
+                "claim_token = NULL WHERE id = ?",
+                (float(new_trigger_time), int(reminder_id)),
+            )
+            conn.commit()
+
+    def dismiss_reminder(self, reminder_id):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("DELETE FROM reminders WHERE id = ?", (int(reminder_id),))
+            conn.commit()
+
+    def reschedule_reminder(self, reminder_id, new_trigger_time):
+        """Re-schedule a recurring reminder to a new future trigger_time, keeping status=0."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE reminders SET trigger_time = ?, status = 0 WHERE id = ?",
+                (float(new_trigger_time), int(reminder_id)),
+            )
+            conn.commit()
+
+    def reschedule_reminder_if_expected(self, reminder_id, expected_trigger, new_trigger_time):
+        """Conditional dispatcher finalize: only advances when the trigger
+        still holds the value the dispatcher saw (prevents double-advance on
+        refire after a crash between send and finalize). Resets attempts and
+        releases the claim. Returns rows updated (0 = resolved concurrently)."""
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "UPDATE reminders SET trigger_time = ?, status = 0, attempts = 0, "
+                "claimed_at = NULL, claim_token = NULL "
+                "WHERE id = ? AND trigger_time = ? AND status = 0",
+                (float(new_trigger_time), int(reminder_id), float(expected_trigger)),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def claim_due_reminders(self, now_epoch, token, stale_seconds=300, exclude_banned=True):
+        """Atomically claim due pending reminders for this dispatch batch.
+        Returns [(id, trigger_time)] owned by `token`; concurrent batches
+        and fresh claims are excluded, stale ones (>stale_seconds) refire.
+        Banned creators excluded via subquery, private-chat scope only —
+        see claim_due_todos."""
+        now = float(now_epoch)
+        ban_filter = (
+            "AND NOT (chat_id = CAST(creator_id AS TEXT) "
+            "AND creator_id IN (SELECT user_id FROM panel_bans))"
+            if exclude_banned else ""
+        )
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE reminders SET claimed_at = ?, claim_token = ? "
+                "WHERE status = 0 AND trigger_time <= ? "
+                "AND (claimed_at IS NULL OR claimed_at < ?) "
+                f"{ban_filter}",
+                (now, str(token), now, now - int(stale_seconds)),
+            )
+            rows = conn.execute(
+                "SELECT id, trigger_time FROM reminders WHERE claim_token = ? "
+                "ORDER BY trigger_time ASC",
+                (str(token),),
+            ).fetchall()
+            conn.commit()
+            return rows
+
+    def release_reminder_claim(self, reminder_id):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE reminders SET claimed_at = NULL, claim_token = NULL WHERE id = ?",
+                (int(reminder_id),),
+            )
+            conn.commit()
+
+    def note_reminder_failure(self, reminder_id):
+        """Record one permanent dispatch failure; releases the claim so the
+        next cycle retries. Returns the new attempt count."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE reminders SET attempts = attempts + 1, claimed_at = NULL, "
+                "claim_token = NULL WHERE id = ?",
+                (int(reminder_id),),
+            )
+            row = conn.execute(
+                "SELECT attempts FROM reminders WHERE id = ?", (int(reminder_id),)
+            ).fetchone()
+            conn.commit()
+            return int(row[0]) if row else 0
+
+    def get_reminder_by_id(self, reminder_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT id, chat_id, creator_id, text, mention_type, recurrence, trigger_time, "
+            "status, assignee_id, assignee_username "
+            "FROM reminders WHERE id = ?",
+            (int(reminder_id),),
+        ).fetchone()
+        return row
+
+    def get_pending_reminders(self, chat_id):
+        """Pending (status=0) reminders for a chat scope, soonest first."""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT id, chat_id, creator_id, text, trigger_time, recurrence, assignee_username "
+            "FROM reminders WHERE chat_id = ? AND status = 0 ORDER BY trigger_time ASC",
+            (str(chat_id),),
+        ).fetchall()
+        return rows
+
+    # =========================
+    # Feature 1: known_chats / group_members (real broadcast + mention data)
+    # =========================
+    def upsert_known_chat(self, chat_id, chat_type, username, title=None):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                """INSERT INTO known_chats (chat_id, type, username, title, last_seen)
+                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(chat_id) DO UPDATE SET
+                     type=excluded.type, username=excluded.username,
+                     title=excluded.title, last_seen=CURRENT_TIMESTAMP""",
+                (str(chat_id), chat_type, username, title),
+            )
+            conn.commit()
+
+    def upsert_group_member(self, chat_id, user_id, username, first_name):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                """INSERT INTO group_members (chat_id, user_id, username, first_name, last_seen)
+                   VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                   ON CONFLICT(chat_id, user_id) DO UPDATE SET
+                     username=excluded.username, first_name=excluded.first_name,
+                     last_seen=CURRENT_TIMESTAMP""",
+                (str(chat_id), int(user_id), username, first_name),
+            )
+            conn.commit()
+
+    def get_known_chat_ids(self, types_):
+        conn = self._connect()
+        qmarks = ",".join("?" * len(types_))
+        rows = conn.execute(
+            f"SELECT chat_id FROM known_chats WHERE type IN ({qmarks})", tuple(types_)
+        ).fetchall()
+        out = []
+        for (cid,) in rows:
+            try:
+                out.append(int(cid))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+    def get_known_chats_with_titles(self, types_):
+        """(chat_id, title, last_seen) rows for the admin's group list —
+        title falls back to username or 'بدون عنوان' at display time."""
+        conn = self._connect()
+        qmarks = ",".join("?" * len(types_))
+        return conn.execute(
+            f"""SELECT chat_id, COALESCE(title, ''), COALESCE(username, ''), last_seen
+                FROM known_chats WHERE type IN ({qmarks})
+                ORDER BY last_seen DESC""",
+            tuple(types_),
+        ).fetchall()
+
+    def get_group_members(self, chat_id):
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT user_id, username, first_name FROM group_members "
+            "WHERE chat_id = ? ORDER BY last_seen DESC",
+            (str(chat_id),),
+        ).fetchall()
+        return rows
+
+    def resolve_username_in_chat(self, chat_id, username):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT user_id FROM group_members WHERE chat_id = ? AND username = ? COLLATE NOCASE",
+            (str(chat_id), username),
+        ).fetchone()
+        return row[0] if row else None
+
+    # =========================
+    # Admin panel: paged lists, counts, search (Stage 2A)
+    # =========================
+    @staticmethod
+    def _escape_like(text):
+        """Escape a user-supplied fragment for a LIKE ... ESCAPE '\' clause."""
+        return str(text).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def count_known_chats(self, types_):
+        conn = self._connect()
+        qmarks = ",".join("?" * len(types_))
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM known_chats WHERE type IN ({qmarks})", tuple(types_)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def list_known_chats_paged(self, types_, limit=10, offset=0):
+        """(chat_id, type, username, title, last_seen), most recent first."""
+        conn = self._connect()
+        qmarks = ",".join("?" * len(types_))
+        return conn.execute(
+            f"""SELECT chat_id, type, COALESCE(username, ''), COALESCE(title, ''), last_seen
+                FROM known_chats WHERE type IN ({qmarks})
+                ORDER BY last_seen DESC LIMIT ? OFFSET ?""",
+            tuple(types_) + (max(1, int(limit)), max(0, int(offset))),
+        ).fetchall()
+
+    def get_known_chat(self, chat_id):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT chat_id, type, username, title, last_seen FROM known_chats WHERE chat_id = ?",
+            (str(chat_id),),
+        ).fetchone()
+
+    def search_known_chats(self, query, limit=10):
+        """Exact chat_id / exact username first, then escaped substring on
+        username/title. The admin always picks from rendered rows — the bot
+        never acts on a first match. Returns
+        (chat_id, type, username, title, last_seen)."""
+        q = str(query or "").strip().lstrip("@")[:64]
+        if not q:
+            return []
+        conn = self._connect()
+        out, seen = [], set()
+
+        def _add(rows):
+            for r in rows:
+                if r[0] not in seen:
+                    seen.add(r[0])
+                    out.append(r)
+
+        if q.lstrip("-").isdigit():
+            _add(conn.execute(
+                "SELECT chat_id, type, COALESCE(username, ''), COALESCE(title, ''), last_seen"
+                " FROM known_chats WHERE chat_id = ?",
+                (q,),
+            ).fetchall())
+        _add(conn.execute(
+            """SELECT chat_id, type, COALESCE(username, ''), COALESCE(title, ''), last_seen
+               FROM known_chats WHERE username = ? COLLATE NOCASE""",
+            (q,),
+        ).fetchall())
+        like = f"%{self._escape_like(q)}%"
+        _add(conn.execute(
+            """SELECT chat_id, type, COALESCE(username, ''), COALESCE(title, ''), last_seen
+               FROM known_chats
+               WHERE username LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\'
+               ORDER BY last_seen DESC""",
+            (like, like),
+        ).fetchall())
+        return out[: max(1, int(limit))]
+
+    def list_group_members_paged(self, chat_id, limit=10, offset=0):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT user_id, username, first_name, last_seen FROM group_members "
+            "WHERE chat_id = ? ORDER BY last_seen DESC LIMIT ? OFFSET ?",
+            (str(chat_id), max(1, int(limit)), max(0, int(offset))),
+        ).fetchall()
+
+    def count_group_members(self, chat_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM group_members WHERE chat_id = ?", (str(chat_id),)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def search_group_members(self, query, limit=10):
+        """Find observed users by numeric id or @username (exact NOCASE
+        first, escaped substring after). Returns
+        (chat_id, user_id, username, first_name, last_seen)."""
+        q = str(query or "").strip().lstrip("@")[:64]
+        if not q:
+            return []
+        conn = self._connect()
+        out, seen = [], set()
+
+        def _add(rows):
+            for r in rows:
+                key = (r[0], r[1])
+                if key not in seen:
+                    seen.add(key)
+                    out.append(r)
+
+        if q.lstrip("-").isdigit():
+            _add(conn.execute(
+                "SELECT chat_id, user_id, username, first_name, last_seen "
+                "FROM group_members WHERE user_id = ?",
+                (int(q),),
+            ).fetchall())
+        _add(conn.execute(
+            "SELECT chat_id, user_id, username, first_name, last_seen "
+            "FROM group_members WHERE username = ? COLLATE NOCASE",
+            (q,),
+        ).fetchall())
+        like = f"%{self._escape_like(q)}%"
+        _add(conn.execute(
+            "SELECT chat_id, user_id, username, first_name, last_seen "
+            "FROM group_members WHERE username LIKE ? ESCAPE '\\' "
+            "OR first_name LIKE ? ESCAPE '\\' ORDER BY last_seen DESC",
+            (like, like),
+        ).fetchall())
+        return out[: max(1, int(limit))]
+
+    def count_user_facts(self, user_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM user_facts WHERE user_id = ?", (int(user_id),)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def count_todos_by_creator(self, user_id, active_only=True):
+        conn = self._connect()
+        q = "SELECT COUNT(*) FROM todos WHERE creator_id = ?"
+        params = [int(user_id)]
+        if active_only:
+            q += " AND status = 0"
+        row = conn.execute(q, params).fetchone()
+        return row[0] if row else 0
+
+    def count_reminders_by_creator(self, user_id, active_only=True):
+        conn = self._connect()
+        q = "SELECT COUNT(*) FROM reminders WHERE creator_id = ?"
+        params = [int(user_id)]
+        if active_only:
+            q += " AND status = 0"
+        row = conn.execute(q, params).fetchone()
+        return row[0] if row else 0
+
+    # =========================
+    # Per-user sessions (private chats)
+    # =========================
+    def list_sessions(self, user_id, limit=20):
+        """Newest-first session list for a user. Reads happen on the calling
+        (worker) thread's connection — SQLite WAL lets concurrent reads run
+        while writes serialize on the write lock."""
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT session_id, title, created_at FROM sessions "
+            "WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (int(user_id), int(limit)),
+        ).fetchall()
+        return rows
+
+    def count_sessions(self, user_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE user_id = ?", (int(user_id),)
+        ).fetchone()
+        return row[0] if row else 0
+
+    def create_session(self, user_id, session_id, title=""):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions (session_id, user_id, title) VALUES (?, ?, ?)",
+                (str(session_id), int(user_id), title),
+            )
+            conn.execute(
+                "INSERT INTO user_active_sessions (user_id, active_session_id) "
+                "VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET "
+                "active_session_id=excluded.active_session_id",
+                (int(user_id), str(session_id)),
+            )
+            conn.commit()
+
+    def rename_session(self, user_id, session_id, title):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE sessions SET title = ? WHERE session_id = ? AND user_id = ?",
+                (title, str(session_id), int(user_id)),
+            )
+            conn.commit()
+
+    def delete_session(self, user_id, session_id):
+        """Delete one session (its messages + rolling summary + registry row).
+        Clears the active pointer when it pointed at the deleted session.
+        Returns True if a session actually existed and was removed."""
+        with self._write_lock:
+            conn = self._connect()
+            existed = conn.execute(
+                "SELECT 1 FROM sessions WHERE session_id = ? AND user_id = ?",
+                (str(session_id), int(user_id)),
+            ).fetchone() is not None
+            if not existed:
+                return False
+            memory_id = f"{int(user_id)}#{str(session_id)}"
+            conn.execute("DELETE FROM messages WHERE chat_id = ?", (memory_id,))
+            conn.execute("DELETE FROM summaries WHERE chat_id = ?", (memory_id,))
+            conn.execute(
+                "DELETE FROM sessions WHERE session_id = ? AND user_id = ?",
+                (str(session_id), int(user_id)),
+            )
+            conn.execute(
+                "UPDATE user_active_sessions SET active_session_id = NULL "
+                "WHERE user_id = ? AND active_session_id = ?",
+                (int(user_id), str(session_id)),
+            )
+            conn.commit()
+            return True
+
+    def sessions_has_title(self, user_id, session_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT title FROM sessions WHERE session_id = ? AND user_id = ?",
+            (str(session_id), int(user_id)),
+        ).fetchone()
+        return bool(row and row[0])
+
+    def session_exists(self, user_id, session_id):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT 1 FROM sessions WHERE session_id = ? AND user_id = ?",
+            (str(session_id), int(user_id)),
+        ).fetchone() is not None
+
+    # ---- Digest memory (repeat-news guard) ----
+    def save_digest_lines(self, digest_date, lines, profile_key="standard"):
+        """Record this run's digest bullet lines. `digest_date` is an ISO
+        'YYYY-MM-DD' string (Iran local)."""
+        if not lines:
+            return
+        with self._write_lock:
+            conn = self._connect()
+            conn.executemany(
+                "INSERT INTO digest_history (digest_date, profile_key, line) VALUES (?, ?, ?)",
+                [(str(digest_date), str(profile_key or "standard"), ln) for ln in lines],
+            )
+            # GC: keep only the last DIGEST_MEMORY_DAYS worth of rows.
+            conn.execute(
+                "DELETE FROM digest_history WHERE digest_date < date('now', ?)",
+                (f"-{int(DIGEST_MEMORY_DAYS)} days",),
+            )
+            conn.commit()
+
+    def get_recent_digest_lines(self, exclude_date=None, profile_key="standard"):
+        """Headline lines of the last DIGEST_MEMORY_DAYS for one profile
+        key, oldest first, optionally excluding one day."""
+        conn = self._connect()
+        key = str(profile_key or "standard")
+        if exclude_date:
+            rows = conn.execute(
+                "SELECT line FROM digest_history WHERE profile_key = ? AND digest_date != ? "
+                "ORDER BY id ASC",
+                (key, str(exclude_date)),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT line FROM digest_history WHERE profile_key = ? ORDER BY id ASC",
+                (key,),
+            ).fetchall()
+        return [r[0] for r in rows]
+
+    # =========================
+    # Digest topics: modes, profiles, ledger, unreachable
+    # =========================
+    def get_digest_modes(self):
+        """{chat_id: (mode, profile_id)} in ONE query. Absent = standard."""
+        conn = self._connect()
+        return {r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT chat_id, mode, profile_id FROM digest_group_config").fetchall()}
+
+    def is_known_digest_group(self, chat_id):
+        row = self._connect().execute(
+            "SELECT 1 FROM known_chats WHERE chat_id = ? AND type IN ('group', 'supergroup')",
+            (str(chat_id),)).fetchone()
+        return bool(row)
+
+    def list_digest_groups_paged(self, filter_key="all", query="", limit=10, offset=0,
+                                 digest_date=None):
+        """Return group rows for the digest panel, newest last_seen first.
+
+        Rows are (chat_id, type, username, title, last_seen, mode, profile_id,
+        delivery_status, delivery_error, unreachable_count).
+        """
+        date = str(digest_date or __import__("timeutil").format_trigger_time_iran(
+            __import__("time").time()).split(" ")[0])
+        args = ["group", "supergroup"]
+        where = ["k.type IN (?, ?)"]
+        q = self._escape_like(str(query or "").strip()[:64])
+        if q:
+            where.append("(k.title LIKE ? ESCAPE '\\' OR k.username LIKE ? ESCAPE '\\')")
+            args.extend([f"%{q}%", f"%{q}%"])
+        if filter_key == "standard":
+            where.append("COALESCE(c.mode, 'standard') = 'standard'")
+        elif filter_key == "off":
+            where.append("COALESCE(c.mode, 'standard') = 'off'")
+        elif filter_key == "profile":
+            where.append("COALESCE(c.mode, 'standard') = 'profile'")
+        elif filter_key == "unreachable":
+            where.append("COALESCE(u.consec_failures, 0) >= 3")
+        sql = f"""SELECT k.chat_id, k.type, COALESCE(k.username, ''),
+                         COALESCE(k.title, ''), k.last_seen,
+                         COALESCE(c.mode, 'standard'), c.profile_id,
+                         d.status, COALESCE(d.error, ''),
+                         COALESCE(u.consec_failures, 0)
+                    FROM known_chats k
+                    LEFT JOIN digest_group_config c ON c.chat_id = k.chat_id
+                    LEFT JOIN digest_deliveries d
+                      ON d.chat_id = k.chat_id AND d.digest_date = ?
+                    LEFT JOIN digest_unreachable u ON u.chat_id = k.chat_id
+                   WHERE {' AND '.join(where)}
+                   ORDER BY k.last_seen DESC LIMIT ? OFFSET ?"""
+        args = [date] + args + [max(1, int(limit)), max(0, int(offset))]
+        return self._connect().execute(sql, tuple(args)).fetchall()
+
+    def count_digest_groups(self, filter_key="all", query=""):
+        return len(self.list_digest_groups_paged(filter_key, query, 1000000, 0))
+
+    def count_digest_profile_groups(self, profile_id):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT COUNT(*) FROM digest_group_config WHERE mode = 'profile' AND profile_id = ?",
+            (int(profile_id),)).fetchone()[0]
+
+    def get_digest_delivery_for_date(self, chat_id, digest_date):
+        return self.get_digest_delivery(chat_id, digest_date)
+
+    def set_digest_mode(self, chat_id, mode, profile_id, updated_by):
+        """mode in standard/off/profile; profile mode requires an existing
+        previewed profile (enforced here so no caller can bypass it)."""
+        mode = str(mode)
+        if mode not in ("standard", "off", "profile"):
+            raise ValueError(f"bad digest mode: {mode!r}")
+        pid = None
+        if mode == "profile":
+            try:
+                pid = int(profile_id)
+            except (TypeError, ValueError):
+                raise ValueError("profile mode needs a profile id")
+            with self._write_lock:
+                conn = self._connect()
+                row = conn.execute(
+                    "SELECT previewed_at FROM digest_profiles WHERE id = ?", (pid,)).fetchone()
+                if not row or not row[0]:
+                    raise ValueError("profile has no successful preview yet")
+                conn.execute(
+                    "INSERT INTO digest_group_config (chat_id, mode, profile_id, updated_by, updated_at) "
+                    "VALUES (?, 'profile', ?, ?, CURRENT_TIMESTAMP) "
+                    "ON CONFLICT(chat_id) DO UPDATE SET mode='profile', profile_id=excluded.profile_id, "
+                    "updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP",
+                    (str(chat_id), pid, int(updated_by)),
+                )
+                conn.commit()
+            return
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO digest_group_config (chat_id, mode, profile_id, updated_by, updated_at) "
+                "VALUES (?, ?, NULL, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(chat_id) DO UPDATE SET mode=excluded.mode, profile_id=NULL, "
+                "updated_by=excluded.updated_by, updated_at=CURRENT_TIMESTAMP",
+                (str(chat_id), mode, int(updated_by)),
+            )
+            conn.commit()
+
+    def create_digest_profile(self, name, topic, created_by):
+        name = str(name or "").strip()
+        topic = sanitize_digest_topic(topic)[:200]
+        if not name or len(name) > 40 or not topic:
+            raise ValueError("profile name and topic are required")
+        with self._write_lock:
+            conn = self._connect()
+            duplicate = conn.execute(
+                "SELECT 1 FROM digest_profiles WHERE name = ? COLLATE NOCASE",
+                (name,),
+            ).fetchone()
+            if duplicate:
+                raise ValueError("profile name already exists")
+            cur = conn.execute(
+                "INSERT INTO digest_profiles (name, topic, created_by) VALUES (?, ?, ?)",
+                (name, topic, int(created_by)),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def list_digest_profiles(self):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT id, name, topic, created_by, created_at, previewed_at "
+            "FROM digest_profiles ORDER BY id ASC").fetchall()
+
+    def get_digest_profile(self, profile_id):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT id, name, topic, created_by, created_at, previewed_at "
+            "FROM digest_profiles WHERE id = ?", (int(profile_id),)).fetchone()
+
+    def count_digest_profiles(self):
+        conn = self._connect()
+        return conn.execute("SELECT COUNT(*) FROM digest_profiles").fetchone()[0]
+
+    def update_digest_profile_topic(self, profile_id, topic):
+        """New topic + preview reset (must re-preview before assignment)."""
+        topic = sanitize_digest_topic(topic)[:200]
+        if not topic:
+            raise ValueError("topic is required")
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "UPDATE digest_profiles SET topic = ?, previewed_at = NULL WHERE id = ?",
+                (topic, int(profile_id)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def mark_digest_profile_previewed(self, profile_id):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE digest_profiles SET previewed_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (int(profile_id),),
+            )
+            conn.commit()
+
+    def delete_digest_profile(self, profile_id):
+        """Delete profile; groups on it fall back to standard. Returns the
+        number of affected groups."""
+        with self._write_lock:
+            conn = self._connect()
+            rows = conn.execute(
+                "SELECT chat_id FROM digest_group_config WHERE mode = 'profile' AND profile_id = ?",
+                (int(profile_id),)).fetchall()
+            conn.execute(
+                "UPDATE digest_group_config SET mode = 'standard', profile_id = NULL "
+                "WHERE mode = 'profile' AND profile_id = ?", (int(profile_id),))
+            conn.execute("DELETE FROM digest_profiles WHERE id = ?", (int(profile_id),))
+            conn.commit()
+            return [r[0] for r in rows]
+
+    def record_digest_delivery(self, chat_id, digest_date, profile_key, status, error=""):
+        with self._write_lock:
+            conn = self._connect()
+            if str(status) != "sent":
+                final = conn.execute(
+                    "SELECT status FROM digest_deliveries "
+                    "WHERE chat_id = ? AND digest_date = ?",
+                    (str(chat_id), str(digest_date)),
+                ).fetchone()
+                if final and final[0] == "sent":
+                    return
+            conn.execute(
+                "INSERT INTO digest_deliveries (chat_id, digest_date, profile_key, status, error) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(chat_id, digest_date) DO UPDATE SET profile_key=excluded.profile_key, "
+                "status=excluded.status, error=excluded.error, sent_at=CURRENT_TIMESTAMP",
+                (str(chat_id), str(digest_date), str(profile_key or "standard"),
+                 str(status)[:20], str(error or "")[:200]),
+            )
+            conn.commit()
+
+    def record_digest_skip(self, chat_id, digest_date, profile_key, status):
+        """Informational skip row (off/budget/no-results/unreachable-hold):
+        INSERT-only, never overwrites an existing sent/failed row, so a
+        later mode flip or hold can never erase delivery history."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT OR IGNORE INTO digest_deliveries (chat_id, digest_date, profile_key, status, error) "
+                "VALUES (?, ?, ?, ?, '')",
+                (str(chat_id), str(digest_date), str(profile_key or "standard"),
+                 str(status)[:20]),
+            )
+            conn.commit()
+
+    def get_digest_delivery(self, chat_id, digest_date):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT profile_key, status, error, sent_at FROM digest_deliveries "
+            "WHERE chat_id = ? AND digest_date = ?",
+            (str(chat_id), str(digest_date))).fetchone()
+
+    def deliveries_for_date(self, digest_date):
+        conn = self._connect()
+        return {r[0]: (r[1], r[2]) for r in conn.execute(
+            "SELECT chat_id, profile_key, status FROM digest_deliveries WHERE digest_date = ?",
+            (str(digest_date),)).fetchall()}
+
+    def note_digest_unreachable(self, chat_id, failure_date=None):
+        """Bump once per digest date. Returns the current count."""
+        if failure_date is None:
+            failure_date = datetime.now(timezone.utc).date().isoformat()
+        failure_date = str(failure_date)
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO digest_unreachable "
+                "(chat_id, consec_failures, last_failure_at, last_failure_date) "
+                "VALUES (?, 1, CURRENT_TIMESTAMP, ?) "
+                "ON CONFLICT(chat_id) DO UPDATE SET "
+                "consec_failures = consec_failures + 1, "
+                "last_failure_at = CURRENT_TIMESTAMP, last_failure_date = excluded.last_failure_date "
+                "WHERE digest_unreachable.last_failure_date IS NULL "
+                "OR digest_unreachable.last_failure_date != excluded.last_failure_date",
+                (str(chat_id), failure_date),
+            )
+            row = conn.execute(
+                "SELECT consec_failures FROM digest_unreachable WHERE chat_id = ?",
+                (str(chat_id),)).fetchone()
+            conn.commit()
+            return int(row[0]) if row else 0
+
+    def clear_digest_unreachable(self, chat_id):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("DELETE FROM digest_unreachable WHERE chat_id = ?", (str(chat_id),))
+            conn.commit()
+
+    def get_digest_unreachable(self, chat_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT consec_failures, last_failure_at FROM digest_unreachable WHERE chat_id = ?",
+            (str(chat_id),)).fetchone()
+        return (int(row[0]), str(row[1])) if row else (0, "")
+
+    # ---- Per-user long-term facts (portable memory, chat-scoped) ----
+    def add_user_facts(self, user_id, facts, source_chat_id="", visibility="private",
+                       max_per_user=50):
+        """Insert facts (INSERT OR IGNORE — duplicates are idempotent), then
+        trim the user's profile to the newest `max_per_user` facts. Each fact
+        records where it was learned (source_chat_id + visibility) so
+        injection can be scoped: private facts follow the user across their
+        own private chats, group facts never leave that group. Returns
+        how many were actually NEW (for metrics)."""
+        added = 0
+        with self._write_lock:
+            conn = self._connect()
+            for fact in facts:
+                cur = conn.execute(
+                    """INSERT OR IGNORE INTO user_facts (user_id, fact, source_chat_id, visibility)
+                       VALUES (?, ?, ?, ?)""",
+                    (int(user_id), str(fact), str(source_chat_id), str(visibility)),
+                )
+                added += cur.rowcount
+            conn.execute(
+                "DELETE FROM user_facts WHERE user_id = ? AND rowid NOT IN "
+                "(SELECT rowid FROM user_facts WHERE user_id = ? "
+                " ORDER BY created_at DESC, rowid DESC LIMIT ?)",
+                (int(user_id), int(user_id), int(max_per_user)),
+            )
+            conn.commit()
+        return added
+
+    def get_user_facts(self, user_id, limit=None, source_chat_id=None,
+                       include_private=True):
+        """Facts for context injection, scoped by where the message is being
+        answered:
+          - private chat (source_chat_id=None): the user's private-learned
+            facts (from any of their private chats — that's their own space).
+          - group (source_chat_id=chat_id): that group's group-learned facts
+            PLUS the user's private facts (their own, safe anywhere).
+        `include_private=False` fetches ONLY group facts (used by /myfacts
+        numbering in groups so /forget numbers match what's shown)."""
+        conn = self._connect()
+        params = [int(user_id)]
+        conds = []
+        if source_chat_id is not None:
+            # Group context: group facts of this group + the user's private facts.
+            conds.append(
+                "((visibility = 'group' AND source_chat_id = ?) OR visibility = 'private')"
+            )
+            params.append(str(source_chat_id))
+        else:
+            # Private context: only private-learned facts.
+            conds.append("visibility = 'private'")
+        if not include_private:
+            conds.append("visibility = 'group'")
+        q = ("SELECT fact FROM user_facts WHERE user_id = ? AND "
+             + " AND ".join(f"({c})" for c in conds)
+             + " ORDER BY created_at ASC, rowid ASC")
+        if limit:
+            q += " LIMIT ?"
+            params.append(int(limit))
+        return [r[0] for r in conn.execute(q, params).fetchall()]
+
+    def list_user_facts_scoped(self, user_id, source_chat_id=None):
+        """Facts for /myfacts display, mirroring get_user_facts scoping so
+        /forget <n> numbers always match what the user sees."""
+        return self.get_user_facts(user_id, limit=None,
+                                   source_chat_id=source_chat_id,
+                                   include_private=True)
+
+    def delete_user_fact(self, user_id, fact):
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM user_facts WHERE user_id = ? AND fact = ?",
+                (int(user_id), str(fact)),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    # ---- Behavioral profile accumulators (zero-LLM-cost collection) ----
+    def record_behavior(self, chat_id, user_id, msg_len, is_reply, has_link,
+                        is_question, is_media, sample_line, hour):
+        """Upsert today's per-(chat,user) behavior counters. One SQLite write
+        per group message — cheap, no LLM involved. Sample lines are capped
+        (6 lines x 80 chars) so the row can't grow unbounded. stat_date is the
+        IRAN local date (not SQL date('now'), which is UTC): the nightly
+        profiler runs at 03:30 Iran == 00:00 UTC, exactly when the UTC date
+        rolls over — a UTC stamp there would hand it the just-started, empty
+        day instead of the Iran day that just ended."""
+        try:
+            stat_date = iran_now().strftime("%Y-%m-%d")
+            with self._write_lock:
+                conn = self._connect()
+                conn.execute(
+                    """INSERT INTO behavior_stats
+                       (chat_id, user_id, stat_date, msg_count, total_chars,
+                        reply_count, link_count, question_count, media_count,
+                        sample_lines, last_hour)
+                       VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(chat_id, user_id, stat_date) DO UPDATE SET
+                         msg_count = msg_count + 1,
+                         total_chars = total_chars + excluded.total_chars,
+                         reply_count = reply_count + excluded.reply_count,
+                         link_count = link_count + excluded.link_count,
+                         question_count = question_count + excluded.question_count,
+                         media_count = media_count + excluded.media_count,
+                         sample_lines = SUBSTR(
+                           sample_lines || CHAR(10) || excluded.sample_lines, -480),
+                         last_hour = excluded.last_hour""",
+                    (str(chat_id), int(user_id), stat_date, int(msg_len),
+                     1 if is_reply else 0, 1 if has_link else 0,
+                     1 if is_question else 0, 1 if is_media else 0,
+                     str(sample_line or "")[:80], int(hour)),
+                )
+                conn.commit()
+        except Exception:
+            pass  # telemetry must never break the message pipeline
+
+    def get_day_behavior_rows(self, stat_date=None):
+        """All behavior rows for a given day. The default is YESTERDAY's Iran
+        date — matching the Iran-local stamp written by record_behavior and
+        the nightly profiler's schedule (03:30 Iran, analyzing the day that
+        just ended; the old UTC default handed it the just-started empty UTC
+        day). Used by the nightly analyzer."""
+        conn = self._connect()
+        if stat_date is None:
+            stat_date = (iran_now().date() - timedelta(days=1)).isoformat()
+        return conn.execute(
+            """SELECT chat_id, user_id, msg_count, total_chars, reply_count,
+                      link_count, question_count, media_count, sample_lines, last_hour
+               FROM behavior_stats WHERE stat_date = ? AND msg_count >= 1
+               ORDER BY msg_count DESC""",
+            (stat_date,),
+        ).fetchall()
+
+    def purge_old_behavior_stats(self, keep_days=3):
+        """Behavior rows are only needed until the nightly analyzer runs;
+        keep a couple of days of slack, drop the rest. Cutoff uses the Iran
+        date to match record_behavior's stamping."""
+        cutoff = (iran_now().date() - timedelta(days=int(keep_days))).isoformat()
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "DELETE FROM behavior_stats WHERE stat_date < ?",
+                (cutoff,),
+            )
+            conn.commit()
+
+    # ---- Group chat log (full-chatter buffer for profiler + /tldr) ----
+    def log_group_chat(self, chat_id, user_id, first_name, text):
+        """Append one group text message to the chat log. Best-effort."""
+        try:
+            with self._write_lock:
+                conn = self._connect()
+                conn.execute(
+                    "INSERT INTO chat_log (chat_id, user_id, first_name, text) VALUES (?, ?, ?, ?)",
+                    (str(chat_id), int(user_id), str(first_name or "")[:60], str(text)[:1000]),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    def get_chat_log_window(self, chat_id, hours=24, max_chars=20000, limit=800):
+        """A group's chat log for the last `hours` hours, oldest-first
+        (insert order via rowid), capped to the most recent `limit` rows."""
+        conn = self._connect()
+        return conn.execute(
+            """SELECT user_id, first_name, text, ts FROM (
+                   SELECT user_id, first_name, text, ts, rowid AS rid FROM chat_log
+                   WHERE chat_id = ? AND ts > datetime('now', ?)
+                   ORDER BY rowid DESC LIMIT ?
+               ) ORDER BY rid ASC""",
+            (str(chat_id), f"-{int(hours)} hours", int(limit)),
+        ).fetchall()
+
+    def purge_old_chat_log(self, keep_hours=48):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "DELETE FROM chat_log WHERE ts < datetime('now', ?)",
+                (f"-{int(keep_hours)} hours",),
+            )
+            conn.commit()
+
+    def purge_old_messages(self, keep_days=90):
+        """Delete conversational history older than keep_days. Summaries and
+        user_facts are untouched (compressed/durable memory survives).
+        Returns the number of rows deleted. Runs daily from the backup job."""
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM messages WHERE timestamp < datetime('now', ?)",
+                (f"-{int(keep_days)} days",),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def get_maintenance_value(self, key):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT value FROM maintenance_meta WHERE key = ?", (str(key),)
+        ).fetchone()
+        return row[0] if row else None
+
+    def set_maintenance_value(self, key, value):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO maintenance_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(key), str(value)),
+            )
+            conn.commit()
+
+    # =========================
+    # Admin control panel: settings / admins / bans / audit
+    # =========================
+    def get_panel_setting(self, key, default=None):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT value FROM panel_settings WHERE key = ?", (str(key),)
+        ).fetchone()
+        return row[0] if row else default
+
+    def set_panel_setting(self, key, value):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO panel_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (str(key), str(value)),
+            )
+            conn.commit()
+
+    def delete_panel_setting(self, key):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("DELETE FROM panel_settings WHERE key = ?", (str(key),))
+            conn.commit()
+
+    def add_panel_admin(self, user_id, added_by):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT OR IGNORE INTO panel_admins (user_id, added_by) VALUES (?, ?)",
+                (int(user_id), int(added_by)),
+            )
+            conn.commit()
+
+    def remove_panel_admin(self, user_id):
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM panel_admins WHERE user_id = ?", (int(user_id),)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def is_panel_admin(self, user_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT 1 FROM panel_admins WHERE user_id = ?", (int(user_id),)
+        ).fetchone()
+        return row is not None
+
+    def list_panel_admins(self):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT user_id, added_by, added_at FROM panel_admins ORDER BY added_at ASC"
+        ).fetchall()
+
+    def ban_user(self, user_id, reason, banned_by):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO panel_bans (user_id, reason, banned_by) VALUES (?, ?, ?) "
+                "ON CONFLICT(user_id) DO UPDATE SET reason=excluded.reason, "
+                "banned_by=excluded.banned_by",
+                (int(user_id), str(reason or "")[:200], int(banned_by)),
+            )
+            conn.commit()
+
+    def unban_user(self, user_id):
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM panel_bans WHERE user_id = ?", (int(user_id),)
+            )
+            conn.commit()
+            return cur.rowcount > 0
+
+    def is_banned_user(self, user_id):
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT 1 FROM panel_bans WHERE user_id = ?", (int(user_id),)
+        ).fetchone()
+        return row is not None
+
+    def write_panel_audit(self, admin_id, action, target="", result="", keep=2000):
+        """Append one audit row; prune to the newest `keep` rows so the
+        table can't grow without bound."""
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "INSERT INTO panel_audit (admin_id, action, target, result) "
+                "VALUES (?, ?, ?, ?)",
+                (int(admin_id), str(action)[:80], str(target)[:200], str(result)[:200]),
+            )
+            conn.execute(
+                "DELETE FROM panel_audit WHERE id NOT IN "
+                "(SELECT id FROM panel_audit ORDER BY id DESC LIMIT ?)",
+                (max(1, int(keep)),),
+            )
+            conn.commit()
+
+    def list_panel_audit(self, limit=20, offset=0):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT id, admin_id, action, target, result, created_at "
+            "FROM panel_audit ORDER BY id DESC LIMIT ? OFFSET ?",
+            (max(1, int(limit)), max(0, int(offset))),
+        ).fetchall()
+
+    def count_panel_audit(self):
+        conn = self._connect()
+        row = conn.execute("SELECT COUNT(*) FROM panel_audit").fetchone()
+        return row[0] if row else 0
+
+    # =========================
+    # Stage 3A: broadcast runs
+    # =========================
+    def create_broadcast(self, admin_id, target, content_type, total, skipped_banned):
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "INSERT INTO panel_broadcasts "
+                "(admin_id, target, content_type, total, skipped_banned, status) "
+                "VALUES (?, ?, ?, ?, ?, 'running')",
+                (int(admin_id), str(target)[:40], str(content_type)[:20],
+                 int(total), int(skipped_banned)),
+            )
+            conn.commit()
+            return cur.lastrowid
+
+    def update_broadcast_progress(self, broadcast_id, sent, unreachable, failed):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE panel_broadcasts SET sent = ?, unreachable = ?, failed = ? "
+                "WHERE id = ?",
+                (int(sent), int(unreachable), int(failed), int(broadcast_id)),
+            )
+            conn.commit()
+
+    def finish_broadcast(self, broadcast_id, status):
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute(
+                "UPDATE panel_broadcasts SET status = ?, finished_at = CURRENT_TIMESTAMP "
+                "WHERE id = ?",
+                (str(status)[:20], int(broadcast_id)),
+            )
+            conn.commit()
+
+    def list_broadcasts(self, limit=10):
+        conn = self._connect()
+        return conn.execute(
+            "SELECT id, admin_id, target, content_type, total, sent, unreachable, "
+            "failed, skipped_banned, status, started_at, finished_at "
+            "FROM panel_broadcasts ORDER BY id DESC LIMIT ?",
+            (max(1, int(limit)),),
+        ).fetchall()
+
+    def mark_interrupted_broadcasts(self):
+        """At startup: any leftover 'running' row died with the process.
+        Returns the count marked. Never auto-resumes (would duplicate sends)."""
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "UPDATE panel_broadcasts SET status = 'interrupted', "
+                "finished_at = CURRENT_TIMESTAMP WHERE status = 'running'"
+            )
+            conn.commit()
+            return cur.rowcount
+
+    # =========================
+    # Stage 2C: reset user data (owner-only). One transaction, rollback on
+    # error, audit row inline. Namespace rules:
+    # - Per-user chat namespaces: <uid>, <uid>#<sid>, inline_[light_]<uid>,
+    #   guest_[light_]<uid>, light_<uid> (Light has no sessions — verified:
+    #   its only memory_id form is light_<chat_id>; groups are negative so
+    #   light_<positive uid> is never a group). debate_*, tldr_* and
+    #   light_<negative id> are NEVER touched (shared per-chat state).
+    # - Separator-safe matching: the session LIKE pattern is '<uid>#%' — the
+    #   literal '#' separator means uid 12 can never match 123#... (3rd char
+    #   differs); sids are alnum (no %/_ wildcards possible). Everything
+    #   else is exact equality.
+    # - Todos/reminders: DELETE only rows in the user's private chat
+    #   (chat_id = str(uid)); group rows they created are KEPT (counted for
+    #   the confirm screen); rows others created but assigned to them are
+    #   unassigned (assignee NULLed), never deleted.
+    # - panel_audit/panel_bans/panel_admins are NEVER touched (ban and
+    #   adminship survive a reset by design). Caller enforces the
+    #   owner/admin/self refusal; banned users MAY be reset.
+    # =========================
+    @staticmethod
+    def _user_chat_scope(uid):
+        s = str(int(uid))
+        where = ("(chat_id = ? OR chat_id LIKE ? ESCAPE '\\' "
+                 "OR chat_id IN (?,?,?,?,?))")
+        params = [s, f"{s}#%",
+                  f"inline_{s}", f"inline_light_{s}",
+                  f"guest_{s}", f"guest_light_{s}", f"light_{s}"]
+        return where, params
+
+    def count_user_data(self, user_id):
+        """Per-store counts for the reset confirm screen (reads only)."""
+        uid = int(user_id)
+        s = str(uid)
+        where, params = self._user_chat_scope(uid)
+        conn = self._connect()
+        counts = {}
+        counts["messages"] = conn.execute(
+            f"SELECT COUNT(*) FROM messages WHERE {where}", params).fetchone()[0]
+        counts["summaries"] = conn.execute(
+            f"SELECT COUNT(*) FROM summaries WHERE {where}", params).fetchone()[0]
+        for table, col in (("sessions", "user_id"),
+                           ("user_facts", "user_id"),
+                           ("behavior_stats", "user_id"),
+                           ("chat_log", "user_id"),
+                           ("group_members", "user_id")):
+            counts[table] = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE {col} = ?", (uid,)).fetchone()[0]
+        counts["active_session"] = conn.execute(
+            "SELECT COUNT(*) FROM user_active_sessions WHERE user_id = ?", (uid,)).fetchone()[0]
+        counts["known_dm"] = conn.execute(
+            "SELECT COUNT(*) FROM known_chats WHERE chat_id = ?", (s,)).fetchone()[0]
+        counts["bot_media"] = conn.execute(
+            "SELECT COUNT(*) FROM bot_media_messages WHERE chat_id = ?", (s,)).fetchone()[0]
+        for table in ("todos", "reminders"):
+            counts[f"{table}_private"] = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE chat_id = ?", (s,)).fetchone()[0]
+            counts[f"{table}_unassign"] = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE assignee_id = ? AND chat_id != ?",
+                (uid, s)).fetchone()[0]
+            counts[f"{table}_group_kept"] = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE creator_id = ? AND chat_id != ?",
+                (uid, s)).fetchone()[0]
+        return counts
+
+    def reset_user_data(self, admin_id, user_id):
+        """Delete everything count_user_data reports (except the *_group_kept
+        counters, which are display-only) in ONE transaction under the write
+        lock, plus one audit row with per-store counts. Rollback on any
+        error. Returns the counts dict."""
+        uid = int(user_id)
+        s = str(uid)
+        where, params = self._user_chat_scope(uid)
+        with self._write_lock:
+            conn = self._connect()
+            try:
+                counts = {}
+                counts["messages"] = conn.execute(
+                    f"DELETE FROM messages WHERE {where}", params).rowcount
+                counts["summaries"] = conn.execute(
+                    f"DELETE FROM summaries WHERE {where}", params).rowcount
+                for table, col in (("sessions", "user_id"),
+                                   ("user_facts", "user_id"),
+                                   ("behavior_stats", "user_id"),
+                                   ("chat_log", "user_id"),
+                                   ("group_members", "user_id")):
+                    counts[table] = conn.execute(
+                        f"DELETE FROM {table} WHERE {col} = ?", (uid,)).rowcount
+                counts["active_session"] = conn.execute(
+                    "DELETE FROM user_active_sessions WHERE user_id = ?", (uid,)).rowcount
+                counts["known_dm"] = conn.execute(
+                    "DELETE FROM known_chats WHERE chat_id = ?", (s,)).rowcount
+                counts["bot_media"] = conn.execute(
+                    "DELETE FROM bot_media_messages WHERE chat_id = ?", (s,)).rowcount
+                for table in ("todos", "reminders"):
+                    counts[f"{table}_group_kept"] = conn.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE creator_id = ? AND chat_id != ?",
+                        (uid, s)).fetchone()[0]
+                    counts[f"{table}_private"] = conn.execute(
+                        f"DELETE FROM {table} WHERE chat_id = ?", (s,)).rowcount
+                    counts[f"{table}_unassign"] = conn.execute(
+                        f"UPDATE {table} SET assignee_id = NULL, assignee_username = NULL "
+                        f"WHERE assignee_id = ? AND chat_id != ?", (uid, s)).rowcount
+                summary = ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+                conn.execute(
+                    "INSERT INTO panel_audit (admin_id, action, target, result) "
+                    "VALUES (?, 'user_reset', ?, ?)",
+                    (int(admin_id), s, summary[:200]),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            return counts
+
+    def maybe_vacuum(self, interval_days=7):
+        """Rebuild the DB file to reclaim space from purged rows, at most
+        once per interval_days (restart-safe via maintenance_meta). Returns
+        True when a VACUUM actually ran. Uses a throwaway connection so it
+        never interferes with the pooled thread-local ones."""
+        import time as _time
+
+        try:
+            last = float(self.get_maintenance_value("last_vacuum") or 0)
+        except (TypeError, ValueError):
+            last = 0
+        if _time.time() - last < int(interval_days) * 86400:
+            return False
+        with self._write_lock:
+            conn = sqlite3.connect(self.db_file, timeout=60)
+            try:
+                conn.execute("VACUUM")
+                conn.commit()
+            finally:
+                conn.close()
+        self.set_maintenance_value("last_vacuum", _time.time())
+        return True
+
+    def checkpoint_wal(self):
+        """Checkpoint WAL frames into the main DB file (TRUNCATE mode resets
+        the WAL afterwards). Called once during graceful shutdown so a
+        restart starts clean with nothing to replay. Returns the
+        (busy, log_frames, checkpointed_frames) triple. Uses a throwaway
+        connection so pooled thread-local ones are untouched."""
+        with self._write_lock:
+            conn = sqlite3.connect(self.db_file, timeout=60)
+            try:
+                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                conn.commit()
+            finally:
+                conn.close()
+        return tuple(row) if row else (0, 0, 0)
+
+    def delete_all_user_facts(self, user_id):
+        """Wipes ALL of a user's facts (private + every group) — used by
+        /forget all, which is an explicit privacy action by the user."""
+        with self._write_lock:
+            conn = self._connect()
+            cur = conn.execute(
+                "DELETE FROM user_facts WHERE user_id = ?", (int(user_id),)
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def get_active_session(self, user_id):
+        """Returns the user's active session_id, or None (no active session —
+        plain user_id memory) or 'deleted' (pointer referenced a session that
+        was already removed; treated the same as None by callers)."""
+        conn = self._connect()
+        row = conn.execute(
+            "SELECT active_session_id FROM user_active_sessions WHERE user_id = ?",
+            (int(user_id),),
+        ).fetchone()
+        if not row or row[0] is None:
+            return None
+        exists = conn.execute(
+            "SELECT 1 FROM sessions WHERE session_id = ? AND user_id = ?",
+            (str(row[0]), int(user_id)),
+        ).fetchone()
+        if not exists:
+            return "deleted"
+        return row[0]
+
+    def set_active_session(self, user_id, session_id):
+        """Activate an existing session. No-op (returns False) if the session
+        doesn't belong to this user — that's the ownership check."""
+        with self._write_lock:
+            conn = self._connect()
+            exists = conn.execute(
+                "SELECT 1 FROM sessions WHERE session_id = ? AND user_id = ?",
+                (str(session_id), int(user_id)),
+            ).fetchone()
+            if not exists:
+                return False
+            conn.execute(
+                "INSERT INTO user_active_sessions (user_id, active_session_id) "
+                "VALUES (?, ?) ON CONFLICT(user_id) DO UPDATE SET "
+                "active_session_id=excluded.active_session_id",
+                (int(user_id), str(session_id)),
+            )
+            conn.commit()
+            return True
+
+
+repo = ChatRepository(DB_FILE)
+
+
+def fetch_all_group_ids() -> list:
+    """Real broadcast targets — every group/supergroup this bot has seen a
+    message from, sourced from the known_chats table."""
+    return repo.get_known_chat_ids(("group", "supergroup"))
+
+def fetch_all_user_ids() -> list:
+    """Real broadcast targets — every private-chat user this bot has seen a
+    message from, sourced from the known_chats table."""
+    return repo.get_known_chat_ids(("private",))
+
+
+def _build_all_members_mention(chat_id_str, limit=25):
+    """Best-effort 'tag everyone' workaround: the Bot API has no native way
+    to ping an entire group, so we tag every member this bot has personally
+    seen post in this chat (tracked via group_members). Members who never
+    spoke since the bot joined can't be included — this is a hard platform
+    limitation, not a bug."""
+    members = repo.get_group_members(chat_id_str)
+    if not members:
+        return "@all"
+    tags = []
+    for user_id, username, first_name in members[:limit]:
+        name = first_name or (f"@{username}" if username else str(user_id))
+        tags.append(f"[{name}](tg://user?id={user_id})")
+    text = " ".join(tags)
+    if len(members) > limit:
+        text += f" +{len(members) - limit} نفر دیگر"
+    return text
