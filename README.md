@@ -1,344 +1,172 @@
-# 🤖 Telegram AI Chat Bot
+# L-Bot Modular
 
-A feature-rich Telegram bot powered by AI, offering intelligent conversations, task management, reminders, translations, and image generation capabilities — completely free to host on Hugging Face Spaces and Render.
+Persian-first Telegram AI bots with streaming chat, image understanding, task and reminder workflows, media downloaders, an admin panel, daily digests, and optional Instagram relay support.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![Telegram Bot API](https://img.shields.io/badge/Telegram%20Bot%20API-Latest-blue.svg)](https://core.telegram.org/bots/api)
+The project is designed for Railway and Docker, uses SQLite for durable state, and keeps the historical `python bot.py` entrypoint compatible with existing deployments.
 
----
+## Highlights
 
-## ✨ Features
+- L persona chat with conversation memory, summaries, rate limits, anti-spam, and group mention/reply handling.
+- Optional Light persona bot (`TELEGRAM_TOKEN_LIGHT`) with chat and debate support.
+- Dedicated vision routing for photo turns and `/tr` image translation.
+- `/pic` image generation and `/tr` text/image translation.
+- Todos, recurring reminders, snooze/dismiss actions, and Iran-time parsing.
+- Instagram and YouTube link handling, quality selection, and optional large-file delivery through a Telegram userbot.
+- Inline mode, chosen-inline responses, and Telegram Guest Mode support.
+- Owner/admin panel for users, groups, bans, settings, jobs, broadcasts, digest modes, and digest profiles.
+- Daily news digests with standard/off/custom-profile group modes, shared Tavily budget protection, delivery tracking, and retry-safe fan-out.
+- Background backup, retention, WAL checkpointing, behavior profiling, and fact extraction.
 
-### 🧠 **AI-Powered Conversations**
-- Intelligent chat with context memory and conversation history
-- Automatic summarization of long conversations to maintain context
-- Vision capabilities: analyze and discuss images
-- Support for both private chats and group conversations with @mentions
-- Persian/Farsi language support with UTF-8 encoding
+## Requirements
 
-### 📝 **Todo Management System**
-- Create tasks with priority levels (High, Medium, Normal)
-- Categorize tasks (Work, Personal, General)
-- Set custom deadlines with Iran timezone (UTC+3:30) support
-- Automatic deadline expiration notifications
-- Collaborative task management in groups
-- Interactive inline keyboard for task completion/deletion
+- Python 3.13 for local development.
+- `pyTelegramBotAPI==4.36.0` and the packages pinned in `requirements.txt`.
+- A Telegram bot token from [@BotFather](https://t.me/BotFather).
+- A compatible chat API key (`CHAT_API_KEY` or the legacy `AGNES_API_KEY` fallback).
+- Optional credentials for image generation, web search, Instagram relay, Local Bot API, and userbot uploads.
 
-### ⏰ **Smart Reminder System**
-- Schedule reminders with flexible time formats:
-  - Relative: `45m`, `2h`, `3d`
-  - Absolute clock: `18:30` (Iran time)
-  - Full datetime: `2026-07-15 10:00`
-- Custom recurrence intervals: daily, weekly, or custom (e.g., `12h`, `3d`)
-- Mention targets: notify yourself or all group members
-- Snooze and dismiss functionality
-
-### 🌐 **Translation Service**
-- Professional translation between 25+ languages
-- OCR + translation for images
-- Context-aware and culturally accurate translations
-- Support for technical terminology
-- Automatic source language detection
-
-### 🎨 **AI Image Generation**
-- Generate high-quality images from text prompts
-- Powered by Agnes Image 2.0 Flash model
-- 1024x1024 resolution output
-
-### ️ **Built-in Protection**
-- Rate limiting (per-user and global)
-- Anti-spam protection with automatic muting
-- Thread-safe SQLite database with WAL mode
-- Self-healing infinity polling
-
----
-
-## 📋 Requirements
-
-- Python 3.9 or higher
-- Telegram Bot Token (from [@BotFather](https://t.me/botfather))
-- AI API Key (see API Configuration below)
-
----
-
-## 🔌 API Configuration
-
-This bot uses the **agnes-ai.com API** for AI capabilities. You can easily adapt it to use any other compatible API endpoint:
-
-**Current API Provider:**
-- Website: [https://agnes-ai.com/](https://agnes-ai.com/)
-- Sign up to get your API key
-- Set the `AGNES_API_KEY` environment variable
-
-**Using Alternative APIs:**
-You can use any OpenAI-compatible API by modifying these environment variables:
-- `CHAT_API_BASE` - Your chat API endpoint
-- `IMAGE_API_BASE` - Your image generation API endpoint  
-- `CHAT_MODEL` - Your preferred chat model name
-- `IMAGE_MODEL` - Your preferred image model name
-
-Compatible with: OpenAI, Anthropic, Google AI, Azure OpenAI, and other OpenAI-compatible endpoints.
-
----
-
-## 🚀 Quick Start
-
-### 1. Clone the Repository
+## Quick start
 
 ```bash
-git clone https://github.com/mahdikiani-2007/telegram-ai-chat-bot.git
-cd telegram-ai-chat-bot
-```
-
-### 2. Install Dependencies
-
-```bash
+git clone <repository-url>
+cd <repository-directory>
+python3.13 -m venv .venv
+. .venv/bin/activate
 pip install -r requirements.txt
-```
-
-### 3. Configure Environment Variables
-
-Copy the example environment file and fill in your credentials:
-
-```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your preferred text editor:
+Fill in `.env` with at least:
 
 ```env
-# Required
-TELEGRAM_TOKEN=your_telegram_bot_token_here
-AGNES_API_KEY=your_agnes_api_key_here
-
-# Optional (defaults provided)
-CHAT_API_KEY=your_chat_api_key_here
-IMAGE_API_KEY=your_image_api_key_here
-CHAT_API_BASE=https://router.bynara.id/v1
-AGNES_BASE=https://apihub.agnes-ai.com/v1
-CHAT_MODEL=mimo-v2.5-free
-IMAGE_MODEL=agnes-image-2.0-flash
+TELEGRAM_TOKEN=your_telegram_bot_token
+CHAT_API_KEY=your_chat_api_key
+ADMIN_IDS=123456789
 ```
 
-**How to get your credentials:**
-- **TELEGRAM_TOKEN**: Talk to [@BotFather](https://t.me/botfather) on Telegram and create a new bot
-- **AGNES_API_KEY**: Sign up at [Agnes AI](https://agnes-ai.com) to get your API key (or use your own API provider)
-
-### 4. Run the Bot
+Run locally:
 
 ```bash
 python bot.py
 ```
 
-The bot will start and begin listening for messages!
+`bot.py` is a compatibility shim. It calls `main.main()`, which registers handlers, starts background workers, and runs long polling.
 
----
+## Configuration
 
-## ☁️ Free Deployment (Hugging Face Spaces + Render)
+`.env.example` is the safe, public configuration template. Important settings include:
 
-### Option 1: Hugging Face Spaces (Recommended)
+| Variable | Purpose |
+| --- | --- |
+| `TELEGRAM_TOKEN` | Main L bot token (required). |
+| `TELEGRAM_TOKEN_LIGHT` | Optional Light bot token. |
+| `CHAT_API_KEY` / `AGNES_API_KEY` | Chat-completions authentication. |
+| `CHAT_API_BASE` / `CHAT_MODEL` | Chat endpoint and model. |
+| `VISION_API_KEY` / `VISION_API_BASE` / `VISION_MODEL` | Dedicated photo-understanding endpoint and model. |
+| `IMAGE_API_KEY` / `AGNES_BASE` / `IMAGE_MODEL` | Image-generation endpoint and model. |
+| `ADMIN_IDS` / `ADMIN_ID` | Panel admins; the first `ADMIN_IDS` value is the owner. |
+| `DATA_DIR` | SQLite database, backups, downloads, and session storage. Railway deployments normally use `/data`. |
+| `TAVILY_API_KEY` / `TAVILY_DAILY_LIMIT` | Optional chat and digest web-search budget. |
+| `DIGEST_HOUR_IRAN` / `DIGEST_MINUTE_IRAN` | Daily digest schedule in Iran time. |
+| `IG_RELAY_USERNAME` / `IG_RELAY_PASSWORD` | Optional Instagram relay account. |
+| `TG_API_ID` / `TG_API_HASH` and session settings | Optional Local Bot API and large-file userbot support. |
 
-1. Create a new Space on [Hugging Face](https://huggingface.co/spaces)
-2. Choose **Docker** as the SDK
-3. Upload your code files
-4. Set environment variables in Space Settings → Variables
-5. The persistent storage directory `/data` will be automatically available
+Do not put secrets in source files, README examples, logs, issues, or commits. Runtime data is ignored by Git.
 
-### Option 2: Render
+## Commands and surfaces
 
-1. Create a new Web Service on [Render](https://render.com)
-2. Connect your GitHub repository
-3. Set Build Command: `pip install -r requirements.txt`
-4. Set Start Command: `python bot.py`
-5. Add environment variables in the Render dashboard
-6. Deploy!
+### Chat and media
 
-**Note:** The bot includes a health check server on port 7860 for uptime monitoring.
+| Command/surface | Description |
+| --- | --- |
+| `/start` | Show the bot introduction. |
+| `/new`, `/session` | Create, list, switch, rename, or delete private chat sessions. |
+| `/reset` | Reset private memory or group conversation history according to permissions. |
+| `/stop` | Cancel the caller's active generation; group cancellation requires the placeholder reply. |
+| `/pic <prompt>` | Generate an image. |
+| `/tr <language> <text>` | Translate text. Caption a photo with `/tr` for OCR/vision translation. |
+| Inline mode | Ask through inline queries after enabling `/setinline` in BotFather. |
+| Guest Mode | Respond to supported mentions after enabling Telegram Guest Mode. |
+| Instagram/YouTube links | Download and send supported media; YouTube offers a quality picker. |
 
----
+### Tasks and reminders
 
-## 📚 Available Commands
+| Command | Description |
+| --- | --- |
+| `/todo [text]` | Guided todo creation with priority, category, deadline, and recurrence. |
+| `/todos` | List active and expired todos with management buttons. |
+| `/remind [text]` | Guided reminder creation with relative, clock, and recurring times. |
+| `/reminders` | List pending reminders and delete them when permitted. |
 
-### General Commands
+### Admin and operations
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `/start` | Display welcome message and bot introduction | `/start` |
-| `/reset` | Clear chat history and conversation memory (admin only in groups) | `/reset` |
+| Command/surface | Description |
+| --- | --- |
+| `/admin` | Private inline admin panel. Access is checked on every update. |
+| `/stats` | Admin metrics and activity statistics. |
+| `/digest` | Owner-only digest run and delivery report. |
+| `/relay ...` | Owner/admin Instagram relay configuration and diagnostics. |
+| `/stopall` | Admin-only stop for active L-vs-Light debates. |
 
-### AI Features
+Panel permissions distinguish the owner from other admins. Wide-impact and destructive actions use confirmation steps and are audited.
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| **Chat** | Just send a message or mention the bot in groups | `@botname explain quantum physics` |
-| `/pic [prompt]` | Generate an AI image from text description | `/pic a sunset over mountains` |
-| `/tr [lang] [text]` | Translate text to target language | `/tr en سلام دنیا` |
-| `/tr` (on image) | OCR and translate text from image | Caption photo with `/tr en` |
+## Deployment
 
-### Task Management
+### Railway
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `/todo [task]` | Create a new todo task (interactive flow) | `/todo Buy groceries` |
-| `/todos` | Display active todo list with management buttons | `/todos` |
+1. Create a Railway service from this repository.
+2. Add a persistent volume and set `DATA_DIR=/data`.
+3. Configure the required environment variables in the Railway dashboard.
+4. Deploy from the feature branch through a reviewed merge to `main`.
 
-### Reminders
+Railway uses `Dockerfile` and `start.sh`. The container starts the optional Local Bot API server when `TG_API_ID`/`TG_API_HASH` are configured, then executes `python3 bot.py`. Polling is long-lived; no HTTP health server is required.
 
-| Command | Description | Example |
-|---------|-------------|---------|
-| `/remind [text]` | Create a new reminder (interactive flow) | `/remind Team meeting` |
+### Docker
 
----
-
-## 🎯 Usage Examples
-
-### Creating a Todo Task
-
-```
-/todo Finish project report
-```
-
-The bot will guide you through:
-1. Select priority (High/Medium/Normal)
-2. Choose category (Work/Personal/General)
-3. Set deadline (optional)
-
-### Setting a Reminder
-
-```
-/remind Call dentist
-```
-
-Interactive flow:
-1. Choose trigger time (10m, 30m, 1h, 3h, tomorrow 9AM, or custom)
-2. Select mention target (only me / all members)
-3. Set recurrence (one-time, daily, weekly, or custom interval)
-
-### Translation
-
-```
-# Text translation
-/tr en این یک متن فارسی است
-
-# Image translation (send photo with caption)
-/tr en
+```bash
+docker build -t l-bot .
+docker run --env-file .env -v l-bot-data:/data l-bot
 ```
 
-### Image Generation
+The image includes the media tooling used by the downloader paths. Keep the data volume persistent so the SQLite database, backups, downloads, and sessions survive restarts.
 
-```
-/pic a futuristic city at night with neon lights
-```
+## Data and backups
 
----
+The SQLite database is created at `DATA_DIR/chat_history.db` with WAL mode and thread-local connections. The bot also stores backups, media downloads, and optional Telegram/Instagram session files below `DATA_DIR`.
 
-## 🗄️ Database Schema
+See [RESTORE.md](RESTORE.md) for retention, snapshot, verification, and restore procedures. Never commit `data/`, `.env`, `*.db`, cookies, or `*.session` files.
 
-The bot uses SQLite with the following tables:
+## Development and validation
 
-- **messages**: Conversation history
-- **summaries**: Compressed conversation summaries
-- **todos**: Task management data
-- **reminders**: Scheduled reminders
-- **chat_tracking**: Active chats tracking
+Tests are hermetic: `tests/conftest.py` supplies stub credentials and a temporary data directory.
 
-All data is stored in `chat_history.db` (auto-created on first run).
-
----
-
-## 🔧 Configuration Options
-
-### Environment Variables (Advanced)
-
-```env
-# Memory & Behavior Settings
-RECENT_HISTORY=8              # Number of recent messages kept verbatim
-SUMMARIZE_THRESHOLD=40        # Message count before summarization
-SUMMARIZE_BATCH=30            # Messages compressed per summary pass
-STREAM_EDIT_INTERVAL=1.2      # Seconds between streaming updates
-
-# Data Storage (for Hugging Face Spaces)
-DATA_DIR=/data                # Persistent storage directory
+```bash
+python -m pytest -q tests/
+python tools/check_order.py
+python -m pytest -q tests/test_dispatch.py
 ```
 
----
+Useful diagnostics:
 
-## 🛠️ Development
-
-### Project Structure
-
-```
-telegram-ai-chat-bot/
-├── bot.py                 # Main bot application
-├── requirements.txt       # Python dependencies
-├── .env.example          # Environment variables template
-├── .gitignore           # Git ignore rules
-├── README.md            # This file (English)
-├── README-fa.md         # Persian documentation
-└── LICENSE              # MIT License
+```bash
+python tools/census.py
+python tools/vision_check.py
+python tools/verify_restore.py --help
 ```
 
-### Key Components
+Handler registration order is intentional because pyTelegramBotAPI dispatches first-match handlers. New commands must be registered before the catch-all chat handler and covered by the dispatch checks.
 
-- **ChatRepository**: Thread-safe SQLite database layer
-- **AgnesClient**: AI model interaction (chat, summary, images)
-- **RateLimiter**: Per-user and global rate limiting
-- **SpamTracker**: Anti-spam burst protection
-- **Reminder Scheduler**: Background daemon for timed notifications
+## Project map
 
----
+- [PROJECT_MAP.md](PROJECT_MAP.md) — architecture and feature index.
+- [docs/map/modules.md](docs/map/modules.md) — module responsibilities and public APIs.
+- [docs/map/config.md](docs/map/config.md) — environment variables and message locations.
+- [docs/map/integrations.md](docs/map/integrations.md) — external services and their quirks.
+- [docs/map/data.md](docs/map/data.md) — database schema and runtime state.
+- [RESTORE.md](RESTORE.md) — backup and restore runbook.
 
-## 🤝 Contributing
+## Security
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Treat Telegram tokens, API keys, cookies, database files, and userbot session files as secrets. Use environment variables and a persistent private volume; do not paste credentials into logs or bug reports. Review admin IDs carefully because the first configured ID is the owner.
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
----
-
-## 📜 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🙏 Acknowledgments
-
-- [pyTelegramBotAPI](https://github.com/eternnoir/pyTelegramBotAPI) - Telegram Bot API wrapper
-- [Agnes AI](https://agnes-ai.com) - Default AI API provider (you can use any compatible API)
-- [Hugging Face](https://huggingface.co) - Free hosting platform
-- [Render](https://render.com) - Deployment platform
-
----
-
-## 📞 Support
-
-If you encounter any issues or have questions:
-
-1. Check the [Issues](https://github.com/mahdikiani-2007/telegram-ai-chat-bot/issues) page
-2. Create a new issue with detailed description
-3. Contact the maintainer: [@moai_artwork](https://t.me/moai_artwork)
-
----
-
-## ⚠️ Security Notice
-
-- **Never commit** `.env` file or `chat_history.db` to version control
-- Keep your `TELEGRAM_TOKEN` and API keys confidential
-- Regularly update dependencies for security patches
-- Use environment variables for all sensitive configuration
-
----
-
-## 🌟 Star History
-
-If you find this project useful, please consider giving it a star ⭐
-
----
-
-**Made with ❤️ by [Moai](https://t.me/moai_artwork)**
+Contributions should be made on a branch and submitted as a pull request. Do not push directly to `main`; merges deploy to Railway.
