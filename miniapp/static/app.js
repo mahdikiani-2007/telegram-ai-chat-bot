@@ -49,8 +49,14 @@
     state.screen = name;
     document.querySelectorAll('.screen').forEach((el) => el.classList.remove('active'));
     document.querySelectorAll('.game-wrap, .overlay').forEach((el) => el.classList.remove('active'));
-    const el = $('screen-' + name);
-    if (el) el.classList.add('active');
+    if (name === 'game') {
+      // the play surface is a fixed .game-wrap, not a .screen section
+      const wrap = $('game-wrap');
+      if (wrap) wrap.classList.add('active');
+    } else {
+      const el = $('screen-' + name);
+      if (el) el.classList.add('active');
+    }
     try {
       if (tg && tg.BackButton) {
         if (name === 'lobby') tg.BackButton.hide();
