@@ -182,7 +182,9 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
           chess.load(authoritativeFenRef.current);
           setFen(authoritativeFenRef.current);
           hapticError();
-          if (roomId) {
+          // Only state/turn conflicts can be repaired by resyncing. Auth,
+          // missing-room, and schema errors must not create an error/sync loop.
+          if (roomId && ['stale_sequence', 'not_your_turn'].includes(msg.payload.code)) {
             chessSocket.send({ type: 'game.request_sync', game_id: roomId });
           }
           break;
