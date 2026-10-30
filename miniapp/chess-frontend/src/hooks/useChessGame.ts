@@ -32,6 +32,9 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
 
   const seqRef = useRef(0);
   seqRef.current = seq;
+  const authoritativeFenRef = useRef(chess.fen());
+  const onGameEndRef = useRef(onGameEnd);
+  onGameEndRef.current = onGameEnd;
 
   const clockIntervalRef = useRef<number | null>(null);
 
@@ -79,8 +82,12 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
           setBlackPlayer(msg.payload.black);
           setStatus('active');
           chess.load(msg.payload.fen);
-          setFen(chess.fen());
+          authoritativeFenRef.current = msg.payload.fen;
+          setFen(msg.payload.fen);
           setTurn('white');
+          setCheck(false);
+          setLastMove(null);
+          setMoveHistory([]);
           setSeq(msg.seq);
           if (msg.payload.time_control) {
             setWhiteRemaining(msg.payload.time_control.initial_ms);
@@ -94,6 +101,7 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
           const payload = msg.payload;
           setSeq(msg.seq);
           chess.load(payload.fen);
+          authoritativeFenRef.current = payload.fen;
           setFen(payload.fen);
           setTurn(payload.turn);
           setCheck(payload.check);
@@ -112,6 +120,7 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
           const p = msg.payload;
           setSeq(msg.seq);
           chess.load(p.fen);
+          authoritativeFenRef.current = p.fen;
           setFen(p.fen);
           setTurn(p.turn);
           setCheck(p.check);
@@ -120,8 +129,12 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
           setWhiteRemaining(p.white_ms);
           setBlackRemaining(p.black_ms);
           if (p.move_history) setMoveHistory(p.move_history);
-          if (p.white_id) setWhitePlayer({ user_id: p.white_id, name: p.player1_name || 'سفید' });
-          if (p.black_id) setBlackPlayer({ user_id: p.black_id, name: p.player2_name || 'سیاه' });
+          if (p.white_id !== undefined && p.white_id !== null) {
+            setWhitePlayer({ user_id: p.white_id, name: p.white_name || (p.white_id === p.player1_id ? p.player1_name : p.player2_name) || 'سفید' });
+          }
+          if (p.black_id !== undefined && p.black_id !== null) {
+            setBlackPlayer({ user_id: p.black_id, name: p.black_name || (p.black_id === p.player1_id ? p.player1_name : p.player2_name) || 'سیاه' });
+          }
           setDrawOfferedBy(p.draw_offered_by || null);
           break;
         }
@@ -160,65 +173,67 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
         case 'game.finished': {
           setStatus('finished');
           hapticTap('heavy');
-          if (onGameEnd) {
-            onGameEnd(msg.payload.result, msg.payload.reason);
-          }
+          onGameEndRef.current?.(msg.payload.result, msg.payload.reason);
           break;
         }
 
         case 'error': {
           console.warn('Game error:', msg.payload.message);
+          chess.load(authoritativeFenRef.current);
+          setFen(authoritativeFenRef.current);
           hapticError();
+          if (roomId) {
+            chessSocket.send({ type: 'game.request_sync', game_id: roomId });
+          }
           break;
         }
       }
     });
 
-    // Request initial sync
-    chessSocket.send({
-      type: 'game.request_sync',
-      game_id: roomId,
-    });
+    // Do not request an empty room. For a real room, the socket service
+    // queues this request if authentication/upgrade is still in progress.
+    if (roomId) {
+      chessSocket.send({
+        type: 'game.request_sync',
+        game_id: roomId,
+      });
+    }
 
     return () => {
       unsubStatus();
       unsubMsg();
     };
-  }, [roomId, currentUserId, chess, onGameEnd]);
+  }, [roomId, currentUserId, chess]);
 
   // Actions
   const makeMove = useCallback(
     (from: string, to: string, promotion: string = 'q'): boolean => {
-      if (!isMyTurn) return false;
+      if (!isMyTurn || socketStatus !== 'connected') return false;
 
-      const uci = `${from}${to}${promotion ? promotion : ''}`;
       try {
-        // Optimistic local preview using chess.js
-        const move = chess.move({ from, to, promotion });
+        // Validate against a temporary board. The rendered board remains
+        // server-authoritative and changes only after game.state arrives.
+        const preview = new Chess(fen);
+        const move = preview.move({ from, to, promotion });
         if (!move) return false;
 
-        setFen(chess.fen());
-        setLastMove(uci);
-
-        // Send authoritative move event to server
-        chessSocket.send({
+        const sent = chessSocket.send({
           type: 'game.move',
           game_id: roomId,
           move_id: `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
           expected_seq: seqRef.current,
-          payload: { uci: move.lan || uci },
+          payload: { uci: move.lan || `${from}${to}${promotion || ''}` },
         });
 
+        if (!sent) return false;
         hapticTap('light');
         return true;
-      } catch (err) {
-        // Rollback local board
-        chess.load(fen);
-        setFen(chess.fen());
+      } catch {
+        hapticError();
         return false;
       }
     },
-    [isMyTurn, chess, fen, roomId]
+    [isMyTurn, socketStatus, fen, roomId]
   );
 
   const resign = useCallback(() => {
