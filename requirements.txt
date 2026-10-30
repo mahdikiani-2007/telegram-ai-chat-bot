@@ -11,6 +11,6 @@ instagrapi==3.0.16
 fastapi==0.115.12
 uvicorn[standard]==0.34.3
 python-chess==1.999
-pydantic==2.11.7
+pydantic>=2.12.5,<2.14
 websockets==15.0.1
 httpx==0.28.1

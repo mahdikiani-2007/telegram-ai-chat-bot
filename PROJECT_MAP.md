@@ -37,7 +37,7 @@ Language/runtime: **Python 3.13** (Docker `python:3.13-slim`). Telegram lib: **p
 - `.env.example` — documented env template (copy to gitignored `.env`).
 - `start.sh` — container entry: boots Local Bot API server if `TG_API_ID/HASH` set (waits ≤30s), then `exec python3 bot.py`.
 - `Dockerfile` — 2-stage: builds `telegram-bot-api` from pinned source + deno + ffmpeg + `requirements.txt`.
-- `requirements.txt` — pinned: `pyTelegramBotAPI==4.36.0 requests urllib3 yt-dlp imageio-ffmpeg instagrapi`.
+- `requirements.txt` — pinned core dependencies + games multiplayer stack (`fastapi`, `uvicorn`, `python-chess`, `pydantic>=2.12.5,<2.14`, `websockets`, `httpx`).
 - `RESTORE.md` — backup/restore runbook. `.env` — secrets (gitignored, never commit). `.gitignore` — `__pycache__ .env .pytest_cache data/`.
 - `README.md` + `README-fa.md` — current English and Persian setup, feature, deployment, and operations documentation.
 - `data/` — runtime only (gitignored): `chat_history.db`, `ig/yt_downloads/`, `backups/`, `botapi/`, session files.
