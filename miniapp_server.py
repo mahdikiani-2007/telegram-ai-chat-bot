@@ -216,17 +216,32 @@ class MiniAppHTTPServer(ThreadingHTTPServer):
 
 
 def start_miniapp_server(port=None, token=None):
-    """Bind + serve on a daemon thread. Returns the running server, or None
-    when the port is taken (feature keeps working, just not served)."""
+    """Bind + serve on a daemon thread using Uvicorn ASGI server (FastAPI).
+    Provides WebSocket real-time communication for multiplayer Chess alongside
+    complete backward compatibility for all existing Mini App endpoints.
+    """
+    import uvicorn
     port = int(port or MINIAPP_PORT)
-    try:
-        srv = MiniAppHTTPServer(("0.0.0.0", port), token or TELEGRAM_TOKEN)
-    except OSError as exc:
-        log.error("MiniApp server could not bind :%d (%s) — games web app is down.", port, exc)
-        return None
+
+    def _run_asgi():
+        try:
+            config = uvicorn.Config(
+                "realtime.app:app",
+                host="0.0.0.0",
+                port=port,
+                log_level="info",
+                workers=1,
+                loop="asyncio",
+            )
+            server = uvicorn.Server(config)
+            server.run()
+        except Exception as exc:
+            log.error("Unified MiniApp ASGI server crashed on :%d (%s)", port, exc, exc_info=True)
+
     thread = threading.Thread(
-        target=srv.serve_forever, daemon=True, name="miniapp-http")
+        target=_run_asgi, daemon=True, name="miniapp-asgi"
+    )
     thread.start()
-    log.info("MiniApp server listening on :%d (public: %s)",
+    log.info("Unified MiniApp ASGI server listening on :%d (public: %s)",
              port, MINIAPP_PUBLIC_URL or "NOT CONFIGURED — /play will say so")
-    return srv
+    return thread

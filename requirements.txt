@@ -7,3 +7,10 @@ urllib3==2.2.3
 yt-dlp==2026.8.19
 imageio-ffmpeg==0.6.0
 instagrapi==3.0.16
+# --- Chess multiplayer (added for real-time chess game) ---
+fastapi==0.115.12
+uvicorn[standard]==0.34.3
+python-chess==1.999
+pydantic==2.11.7
+websockets==15.0.1
+httpx==0.28.1

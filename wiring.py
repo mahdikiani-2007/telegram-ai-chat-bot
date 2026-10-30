@@ -123,7 +123,7 @@ def _sync_bot_commands():
         types.BotCommand("stats", "View real-time bot metrics and system performance (Admin only)"),
         types.BotCommand("digest", "Trigger the daily news digest on demand (Admin only)"),
         types.BotCommand("admin", "Open the broadcast and management panel (Admin only)"),
-        types.BotCommand("play", "بازی‌های مینی‌اپ — مار نئون و جدول رتبه‌بندی"),
+        types.BotCommand("play", "بازی‌های مینی‌اپ — شطرنج آنلاین دونفره و مار نئون"),
         types.BotCommand("relay", "Instagram to Telegram post relay control (Admin only)"),
         types.BotCommand("stopall", "Halt all active debates instantly (Admin only)"),
     ]

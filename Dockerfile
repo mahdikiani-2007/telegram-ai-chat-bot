@@ -109,9 +109,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY bot.py main.py wiring.py config.py timeutil.py sessions.py limits.py metrics.py infra.py db.py ai.py bots.py ig_relay.py start.sh ./
+COPY bot.py main.py wiring.py config.py timeutil.py sessions.py limits.py metrics.py infra.py db.py ai.py bots.py ig_relay.py miniapp_server.py start.sh ./
 COPY services/ ./services/
 COPY handlers/ ./handlers/
+COPY miniapp/ ./miniapp/
+COPY repositories/ ./repositories/
+COPY games/ ./games/
+COPY realtime/ ./realtime/
 RUN chmod +x start.sh
 
 # Railway: attach a Volume mounted at this path (via the Railway dashboard,

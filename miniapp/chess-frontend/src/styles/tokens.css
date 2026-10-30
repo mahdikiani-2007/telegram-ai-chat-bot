@@ -1,0 +1,31 @@
+:root {
+  --bg: #070a12;
+  --bg2: #0b1020;
+  --bg3: #121829;
+  --panel: rgba(255, 255, 255, 0.045);
+  --panel-active: rgba(255, 255, 255, 0.08);
+  --panel-line: rgba(255, 255, 255, 0.09);
+  --text: #e9eef8;
+  --dim: #93a0b8;
+  --cyan: #22d3ee;
+  --cyan-glow: rgba(34, 211, 238, 0.35);
+  --pink: #f472b6;
+  --lime: #a3e635;
+  --amber: #fbbf24;
+  --red: #fb7185;
+  --violet: #a78bfa;
+
+  /* Premium Wood / Tournament Board Colors */
+  --board-light: #ebecd0;
+  --board-dark: #779952;
+  --board-selected: rgba(34, 211, 238, 0.55);
+  --board-last-move: rgba(247, 208, 73, 0.45);
+  --board-check: rgba(239, 68, 68, 0.7);
+  --board-dot: rgba(0, 0, 0, 0.18);
+  --board-ring: rgba(0, 0, 0, 0.22);
+
+  --radius-lg: 22px;
+  --radius-md: 16px;
+  --radius-sm: 10px;
+  --font: 'Vazirmatn', Tahoma, system-ui, sans-serif;
+}

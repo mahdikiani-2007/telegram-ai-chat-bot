@@ -1,0 +1,391 @@
+@import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
+
+:root {
+  --felt-dark: #052317;
+  --felt-base: #083824;
+  --felt-light: #0d4d33;
+  --gold: #eab308;
+  --gold-glow: rgba(234, 179, 8, 0.45);
+  --gold-light: #fef08a;
+  --panel: rgba(10, 44, 30, 0.75);
+  --panel-border: rgba(234, 179, 8, 0.25);
+  --text-main: #f8fafc;
+  --text-dim: #94a3b8;
+  --danger: #ef4444;
+  --success: #22c55e;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+
+html, body {
+  height: 100%;
+  background:
+    radial-gradient(1000px 600px at 50% -10%, rgba(234, 179, 8, 0.08), transparent 60%),
+    radial-gradient(800px 500px at 50% 110%, rgba(13, 77, 51, 0.5), transparent 70%),
+    #03140d;
+  color: var(--text-main);
+  font-family: 'Vazirmatn', -apple-system, BlinkMacSystemFont, sans-serif;
+  overflow-x: hidden;
+  overscroll-behavior: none;
+}
+
+#root {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.hokm-container {
+  max-width: 520px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 10px 12px 24px;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+}
+
+/* Glass & Velvet Panel */
+.velvet-panel {
+  background: linear-gradient(160deg, rgba(8, 56, 36, 0.85), rgba(4, 30, 19, 0.95));
+  border: 1px solid var(--panel-border);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4), inset 0 1px 0 rgba(234, 179, 8, 0.15);
+  backdrop-filter: blur(14px);
+}
+
+/* Card Table Felt */
+.hokm-table {
+  width: 100%;
+  aspect-ratio: 1 / 1.05;
+  max-width: 480px;
+  margin: 0 auto;
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at center, var(--felt-light) 0%, var(--felt-base) 65%, var(--felt-dark) 100%);
+  border: 4px solid #14532d;
+  box-shadow:
+    0 20px 50px rgba(0, 0, 0, 0.65),
+    inset 0 0 60px rgba(0, 0, 0, 0.75),
+    0 0 0 2px var(--gold-glow);
+  position: relative;
+  overflow: hidden;
+  direction: ltr !important;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 12px;
+}
+
+/* Table Felt Center Logo */
+.table-watermark {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 64px;
+  opacity: 0.06;
+  pointer-events: none;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: var(--gold);
+}
+
+/* Trump Indicator Pill */
+.trump-badge {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--gold);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  z-index: 20;
+  direction: rtl;
+}
+
+/* Match Score Banner */
+.score-banner {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 20;
+  direction: rtl;
+}
+
+/* Center Trick Area */
+.trick-center {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 170px;
+  height: 170px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+  pointer-events: none;
+}
+
+.trick-card-slot {
+  position: absolute;
+  transition: transform 0.25s cubic-bezier(0.18, 0.89, 0.32, 1.28);
+}
+
+/* Player Pods */
+.player-pod {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  z-index: 15;
+  transition: transform 0.2s ease;
+}
+
+.player-pod.active .avatar-ring {
+  box-shadow: 0 0 0 3px var(--gold), 0 0 18px var(--gold-glow);
+  transform: scale(1.08);
+}
+
+.avatar-ring {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #0f2d1e;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  position: relative;
+  transition: all 0.2s ease;
+}
+
+.crown-badge {
+  position: absolute;
+  top: -8px;
+  right: -4px;
+  font-size: 14px;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.5));
+}
+
+.player-name {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-main);
+  max-width: 75px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-tricks-count {
+  font-size: 10px;
+  font-weight: 800;
+  background: rgba(0,0,0,0.4);
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--gold-light);
+}
+
+/* Playing Card Component */
+.playing-card {
+  width: 62px;
+  height: 88px;
+  background: #ffffff;
+  border-radius: 6px;
+  box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 4px 6px;
+  cursor: pointer;
+  position: relative;
+  transition: transform 0.16s ease, filter 0.16s ease, box-shadow 0.16s ease;
+  transform-origin: bottom center;
+  user-select: none;
+  border: 1px solid #e2e8f0;
+}
+
+.playing-card.red {
+  color: #dc2626;
+}
+
+.playing-card.black {
+  color: #0f172a;
+}
+
+.playing-card.playable {
+  box-shadow: 0 0 0 2px var(--gold), 0 8px 20px rgba(0,0,0,0.45);
+}
+
+.playing-card.playable:hover, .playing-card.selected {
+  transform: translateY(-16px) scale(1.06);
+  z-index: 50;
+}
+
+.playing-card.disabled {
+  opacity: 0.45;
+  filter: grayscale(0.5);
+  cursor: not-allowed;
+}
+
+.playing-card .corner-rank {
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.playing-card .corner-suit {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.playing-card .center-suit {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 26px;
+  opacity: 0.95;
+}
+
+/* Card Back */
+.card-back {
+  background: linear-gradient(135deg, #1e3a8a, #172554);
+  border: 2px solid #ffffff;
+  position: relative;
+  overflow: hidden;
+}
+
+.card-back::after {
+  content: "👑";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 20px;
+  opacity: 0.4;
+}
+
+/* My Hand Fan */
+.my-hand-container {
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  height: 105px;
+  width: 100%;
+  padding-bottom: 4px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-top: 18px;
+}
+
+.my-hand-fan {
+  display: flex;
+  align-items: flex-end;
+  margin: 0 auto;
+}
+
+.my-hand-fan .playing-card {
+  margin-left: -28px;
+}
+
+.my-hand-fan .playing-card:first-child {
+  margin-left: 0;
+}
+
+/* Buttons */
+.gold-btn {
+  background: linear-gradient(135deg, #facc15, #ca8a04);
+  color: #422006;
+  font-weight: 800;
+  border: none;
+  border-radius: 12px;
+  padding: 12px 20px;
+  font-size: 15px;
+  cursor: pointer;
+  box-shadow: 0 4px 16px var(--gold-glow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.15s ease;
+}
+
+.gold-btn:active {
+  transform: scale(0.97);
+}
+
+.outline-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--panel-border);
+  color: var(--text-main);
+  font-weight: 700;
+  border-radius: 12px;
+  padding: 10px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.outline-btn:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Modal Overlay */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 100;
+  animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.modal-card {
+  background: linear-gradient(160deg, #093c26, #052417);
+  border: 2px solid var(--gold);
+  border-radius: 20px;
+  padding: 24px;
+  width: 100%;
+  max-width: 400px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.65), 0 0 30px var(--gold-glow);
+  text-align: center;
+}

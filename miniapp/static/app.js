@@ -212,6 +212,20 @@
   document.addEventListener('DOMContentLoaded', () => {
     renderLobby();
     show('lobby');
+    const chessBtn = $('btn-open-chess');
+    if (chessBtn) {
+      chessBtn.onclick = () => {
+        haptic.tap();
+        window.location.href = '/chess/' + (window.location.search || '');
+      };
+    }
+    const hokmBtn = $('btn-open-hokm');
+    if (hokmBtn) {
+      hokmBtn.onclick = () => {
+        haptic.tap();
+        window.location.href = '/hokm/' + (window.location.search || '');
+      };
+    }
     $('btn-board').onclick = () => { haptic.tap(); show('board'); };
     $('btn-open-snake').onclick = openModeSelect;
     $('btn-back-lobby').onclick = () => { haptic.tap(); show('lobby'); };
