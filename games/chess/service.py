@@ -115,6 +115,11 @@ class ChessService:
             expires_at=time.time() + 3600 * 24,  # 24h expiration for waiting rooms
         )
 
+        # The creator's socket is usually already open while the lobby is
+        # displayed. Register it now so game.start and subsequent state events
+        # are delivered to the creator as soon as the opponent joins.
+        await self.manager.join_room(creator_id, room_id)
+
         log.info("Chess room created: %s by user %d (%s) [TC: %s]", room_id, creator_id, creator_name, time_control_key)
         return {
             "room_id": room_id,
@@ -179,6 +184,13 @@ class ChessService:
                 state_json=json.dumps(state_dict),
                 turn_started_at=room.turn_started_at,
             )
+
+            # Both sockets must be registered in the room before the HTTP
+            # handler broadcasts game.start. Without this membership, the
+            # manager has nobody to receive broadcasts even though the game
+            # state is updated correctly on the server.
+            await self.manager.join_room(room.player1_id, room_id)
+            await self.manager.join_room(player_id, room_id)
 
             p1_info = {"user_id": room.player1_id, "name": room.player1_name}
             p2_info = {"user_id": player_id, "name": player_name}
@@ -546,6 +558,14 @@ class ChessService:
                     "black_ms": b_ms,
                     "white_id": room.white_id,
                     "black_id": room.black_id,
+                    "white_name": (
+                        room.player1_name if room.white_id == room.player1_id
+                        else room.player2_name
+                    ),
+                    "black_name": (
+                        room.player1_name if room.black_id == room.player1_id
+                        else room.player2_name
+                    ),
                     "player1_name": room.player1_name,
                     "player2_name": room.player2_name,
                     "time_control": {
