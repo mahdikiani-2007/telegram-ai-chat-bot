@@ -163,50 +163,62 @@ export const App: React.FC = () => {
       {/* Screen 3: Chess Match */}
       {screen === 'game' && (
         <main style={{ display: 'flex', flexDirection: 'column', flex: 1, justifyContent: 'space-between' }}>
-          {/* Opponent Card (Top) */}
-          <PlayerCard
-            name={topPlayer.name}
-            color={topPlayer.color}
-            remainingMs={topPlayer.time}
-            isActiveTurn={status === 'active' && isTopActiveTurn}
-            isConnected={opponentConnected}
-          />
+          {(!myColor || status === 'waiting') ? (
+            <div className="glass-panel" style={{ textAlign: 'center', padding: '32px 18px', marginTop: 24 }}>
+              <div className="spinner" style={{ margin: '0 auto 14px' }} />
+              <div style={{ fontWeight: 800, marginBottom: 6 }}>در حال همگام‌سازی بازی</div>
+              <div style={{ color: 'var(--dim)', fontSize: 12, lineHeight: 1.8 }}>
+                در حال دریافت رنگ مهره‌ها و وضعیت حریف از سرور...
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Opponent Card (Top) */}
+              <PlayerCard
+                name={topPlayer.name}
+                color={topPlayer.color}
+                remainingMs={topPlayer.time}
+                isActiveTurn={status === 'active' && isTopActiveTurn}
+                isConnected={opponentConnected}
+              />
 
-          {/* Interactive Chess Board */}
-          <ChessBoard
-            fen={fen}
-            myColor={myColor}
-            isMyTurn={isMyTurn}
-            lastMove={lastMove}
-            check={check}
-            onMove={(from, to) => makeMove(from, to, 'q')}
-            onPawnPromotionNeeded={(from, to) => setPromotionPending({ from, to })}
-          />
+              {/* Interactive Chess Board */}
+              <ChessBoard
+                fen={fen}
+                myColor={myColor}
+                isMyTurn={isMyTurn}
+                lastMove={lastMove}
+                check={check}
+                onMove={(from, to) => makeMove(from, to, 'q')}
+                onPawnPromotionNeeded={(from, to) => setPromotionPending({ from, to })}
+              />
 
-          {/* Player Card (Bottom) */}
-          <PlayerCard
-            name={bottomPlayer.name}
-            color={bottomPlayer.color}
-            remainingMs={bottomPlayer.time}
-            isActiveTurn={status === 'active' && isBottomActiveTurn}
-            isConnected={true}
-          />
+              {/* Player Card (Bottom) */}
+              <PlayerCard
+                name={bottomPlayer.name}
+                color={bottomPlayer.color}
+                remainingMs={bottomPlayer.time}
+                isActiveTurn={status === 'active' && isBottomActiveTurn}
+                isConnected={true}
+              />
 
-          {/* Action Controls */}
-          <GameControls
-            onResignClick={() => setShowResignModal(true)}
-            onDrawClick={offerDraw}
-            onToggleHistory={() => setShowHistory(true)}
-            drawOfferedByMe={drawOfferedBy === currentUserId}
-            isDrawIncoming={drawOfferedBy !== null && drawOfferedBy !== currentUserId}
-            onAcceptDraw={acceptDraw}
-            onDeclineDraw={declineDraw}
-            isGameOver={status === 'finished'}
-            onBackToLobby={() => {
-              setScreen('lobby');
-              setShowResultModal(false);
-            }}
-          />
+              {/* Action Controls */}
+              <GameControls
+                onResignClick={() => setShowResignModal(true)}
+                onDrawClick={offerDraw}
+                onToggleHistory={() => setShowHistory(true)}
+                drawOfferedByMe={drawOfferedBy === currentUserId}
+                isDrawIncoming={drawOfferedBy !== null && drawOfferedBy !== currentUserId}
+                onAcceptDraw={acceptDraw}
+                onDeclineDraw={declineDraw}
+                isGameOver={status === 'finished'}
+                onBackToLobby={() => {
+                  setScreen('lobby');
+                  setShowResultModal(false);
+                }}
+              />
+            </>
+          )}
         </main>
       )}
 

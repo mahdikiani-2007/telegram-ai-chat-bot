@@ -41,11 +41,24 @@ class ConnectionManager:
             log.info("Registered WS connection for user %d (%s). Total: %d", user_id, name, len(self._connections))
             return conn
 
-    async def disconnect(self, user_id: int) -> Optional[str]:
-        """Unregister connection and clean room mappings. Returns room_id if was in one."""
+    async def disconnect(
+        self, user_id: int, expected_ws: Optional[WebSocket] = None
+    ) -> Optional[str]:
+        """Unregister only the expected socket, protecting newer reconnects.
+
+        A replaced WebSocket can finish its handler after a new connection for
+        the same Telegram user has already been registered. In that case the
+        old handler must not remove the new connection or its room membership.
+        """
         async with self._lock:
-            conn = self._connections.pop(user_id, None)
-            room_id = conn.room_id if conn else None
+            conn = self._connections.get(user_id)
+            if conn is None:
+                return None
+            if expected_ws is not None and conn.ws is not expected_ws:
+                return None
+
+            self._connections.pop(user_id, None)
+            room_id = conn.room_id
             if room_id and room_id in self._room_members:
                 self._room_members[room_id].discard(user_id)
                 if not self._room_members[room_id]:

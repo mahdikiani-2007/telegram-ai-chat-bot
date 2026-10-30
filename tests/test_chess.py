@@ -25,6 +25,18 @@ from realtime.protocol import (
 from repositories.games import GameRepository
 
 
+class _DummyWebSocket:
+    def __init__(self):
+        self.closed = False
+        self.messages = []
+
+    async def close(self, code=1000, reason=""):
+        self.closed = True
+
+    async def send_json(self, message):
+        self.messages.append(message)
+
+
 # -------------------------------------------------------------
 # 1. Chess Engine Tests
 # -------------------------------------------------------------
@@ -166,11 +178,33 @@ def test_repo_room_crud_and_stats(tmp_path):
 # 4. Chess Service Lifecycle Tests
 # -------------------------------------------------------------
 @pytest.mark.anyio
+async def test_replaced_websocket_cannot_disconnect_new_connection():
+    manager = ConnectionManager()
+    old_ws = _DummyWebSocket()
+    new_ws = _DummyWebSocket()
+
+    await manager.connect(old_ws, 77, "Player")
+    await manager.join_room(77, "room-1")
+    await manager.connect(new_ws, 77, "Player")
+
+    assert old_ws.closed is True
+    assert await manager.disconnect(77, old_ws) is None
+    assert manager.get_connection(77).ws is new_ws
+
+    await manager.join_room(77, "room-1")
+    assert manager.get_room_members("room-1") == {77}
+
+
+@pytest.mark.anyio
 async def test_chess_service_full_game(tmp_path):
     db_file = str(tmp_path / "service_test.db")
     repo = GameRepository(db_file)
     manager = ConnectionManager()
     service = ChessService(repo, manager)
+
+    # Simulate both browser sockets being connected before the room is joined.
+    await manager.connect(_DummyWebSocket(), 201, "PlayerA")
+    await manager.connect(_DummyWebSocket(), 202, "PlayerB")
 
     # 1. Create room
     create_res = await service.create_room(creator_id=201, creator_name="PlayerA", time_control_key="blitz_5_0")
@@ -184,6 +218,7 @@ async def test_chess_service_full_game(tmp_path):
     assert room.status == "active"
     assert room.white_id in (201, 202)
     assert room.black_id in (201, 202)
+    assert manager.get_room_members(room_id) == {201, 202}
 
     # 3. Execute first legal move by White
     white_id = room.white_id

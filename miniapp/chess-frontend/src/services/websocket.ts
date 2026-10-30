@@ -12,6 +12,8 @@ class ChessSocketService {
   private reconnectTimeout: number | null = null;
   private retryAttempt = 0;
   private shouldReconnect = true;
+  private connectPromise: Promise<void> | null = null;
+  private pendingSyncs: Array<Record<string, any>> = [];
 
   public status: 'connected' | 'connecting' | 'disconnected' = 'disconnected';
 
@@ -35,65 +37,122 @@ class ChessSocketService {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
+    if (this.connectPromise) {
+      return this.connectPromise;
+    }
 
     this.shouldReconnect = true;
     this.setStatus('connecting');
 
-    try {
-      const { ticket } = await getTicket();
-      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${proto}//${window.location.host}/ws/chess?ticket=${encodeURIComponent(ticket)}`;
+    this.connectPromise = (async () => {
+      try {
+        const { ticket } = await getTicket();
+        if (!this.shouldReconnect) return;
 
-      this.ws = new WebSocket(wsUrl);
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${proto}//${window.location.host}/ws/chess?ticket=${encodeURIComponent(ticket)}`;
+        const socket = new WebSocket(wsUrl);
+        this.ws = socket;
 
-      this.ws.onopen = () => {
-        this.setStatus('connected');
-        this.retryAttempt = 0;
-        this.startHeartbeat();
-      };
+        socket.onopen = () => {
+          if (this.ws !== socket) return;
+          this.setStatus('connected');
+          this.retryAttempt = 0;
+          this.startHeartbeat();
+          this.flushPendingSyncs();
+        };
 
-      this.ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data) as ServerMessage;
-          this.messageHandlers.forEach((handler) => handler(msg));
-        } catch (e) {
-          console.error('Failed to parse WebSocket JSON', e);
-        }
-      };
+        socket.onmessage = (event) => {
+          if (this.ws !== socket) return;
+          try {
+            const msg = JSON.parse(event.data) as ServerMessage;
+            this.messageHandlers.forEach((handler) => handler(msg));
+          } catch (e) {
+            console.error('Failed to parse WebSocket JSON', e);
+          }
+        };
 
-      this.ws.onclose = () => {
-        this.cleanup();
+        socket.onclose = () => {
+          if (this.ws !== socket) return;
+          this.ws = null;
+          this.cleanup();
+          this.setStatus('disconnected');
+          if (this.shouldReconnect) {
+            this.scheduleReconnect();
+          }
+        };
+
+        socket.onerror = (err) => {
+          if (this.ws === socket) {
+            console.warn('WebSocket connection error:', err);
+          }
+        };
+      } catch (e) {
         this.setStatus('disconnected');
         if (this.shouldReconnect) {
           this.scheduleReconnect();
         }
-      };
-
-      this.ws.onerror = (err) => {
-        console.warn('WebSocket connection error:', err);
-      };
-    } catch (e) {
-      this.setStatus('disconnected');
-      if (this.shouldReconnect) {
-        this.scheduleReconnect();
       }
+    })();
+
+    try {
+      await this.connectPromise;
+    } finally {
+      this.connectPromise = null;
     }
   }
 
-  public send(msg: Record<string, any>): void {
+  public send(msg: Record<string, any>): boolean {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(msg));
-    } else {
-      console.warn('Cannot send WebSocket message: socket not open');
+      try {
+        this.ws.send(JSON.stringify(msg));
+        return true;
+      } catch (e) {
+        console.warn('WebSocket send failed:', e);
+        return false;
+      }
+    }
+
+    // Sync is idempotent and safe to defer until the authenticated socket opens.
+    // User actions are deliberately not queued across reconnects.
+    if (msg.type === 'game.request_sync' && msg.game_id) {
+      this.pendingSyncs = this.pendingSyncs.filter((queued) => queued.game_id !== msg.game_id);
+      this.pendingSyncs.push(msg);
+      if (!this.ws || this.ws.readyState === WebSocket.CLOSED) {
+        void this.connect();
+      }
+      return true;
+    }
+
+    console.warn('Cannot send WebSocket message: socket not open');
+    return false;
+  }
+
+  private flushPendingSyncs(): void {
+    const socket = this.ws;
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+
+    while (this.pendingSyncs.length > 0) {
+      const msg = this.pendingSyncs.shift();
+      if (!msg) continue;
+      try {
+        socket.send(JSON.stringify(msg));
+      } catch (e) {
+        this.pendingSyncs.unshift(msg);
+        console.warn('Failed to flush queued chess sync request:', e);
+        break;
+      }
     }
   }
 
   public disconnect(): void {
     this.shouldReconnect = false;
+    this.pendingSyncs = [];
     this.cleanup();
     if (this.ws) {
-      this.ws.close();
+      const socket = this.ws;
       this.ws = null;
+      socket.close();
     }
     this.setStatus('disconnected');
   }

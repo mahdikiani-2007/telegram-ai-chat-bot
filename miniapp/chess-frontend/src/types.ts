@@ -74,6 +74,8 @@ export interface GameState {
   move_history: MoveRecord[];
   white_id?: number;
   black_id?: number;
+  white_name?: string;
+  black_name?: string;
   player1_name?: string;
   player2_name?: string;
   result?: string | null;

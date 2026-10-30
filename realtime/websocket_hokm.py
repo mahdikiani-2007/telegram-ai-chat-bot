@@ -208,6 +208,6 @@ async def handle_hokm_websocket(
     except Exception:
         log.error("Hokm WS unexpected error for user %d", user_id, exc_info=True)
     finally:
-        room_id = await manager.disconnect(user_id)
+        room_id = await manager.disconnect(user_id, ws)
         if room_id:
             await hokm_service.handle_disconnect(room_id, user_id)
