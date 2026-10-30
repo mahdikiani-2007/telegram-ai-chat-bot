@@ -102,7 +102,7 @@ async def handle_websocket(
         log.error("Unexpected WebSocket exception for user %d", user_id, exc_info=True)
     finally:
         # Cleanup connection and notify rooms
-        room_id = await manager.disconnect(user_id)
+        room_id = await manager.disconnect(user_id, ws)
         if room_id:
             await manager.broadcast_to_room(
                 room_id,
@@ -215,10 +215,23 @@ async def _handle_draw_decline(ws, msg: DrawDeclineMessage, user_id: int, manage
 async def _handle_sync(ws, msg: RequestSyncMessage, user_id: int, manager, chess_service) -> None:
     try:
         sync_payload = await chess_service.get_sync_state(msg.game_id)
-        if sync_payload:
-            await ws.send_json(sync_payload)
-        else:
+        if not sync_payload:
             await ws.send_json(make_error("room_not_found", "Room not found"))
+            return
+
+        # A sync request also subscribes the authenticated player to the room.
+        # This is needed when the WebSocket was opened on the lobby screen,
+        # before the player had a room_id.
+        room = chess_service.get_room(msg.game_id)
+        if room is None:
+            await ws.send_json(make_error("room_not_found", "Room not found"))
+            return
+        if user_id not in (room.player1_id, room.player2_id):
+            await ws.send_json(make_error("unauthorized", "You are not a player in this room"))
+            return
+
+        await manager.join_room(user_id, msg.game_id)
+        await ws.send_json(sync_payload)
     except Exception:
         log.error("Error handling request sync in room %s", msg.game_id, exc_info=True)
         await ws.send_json(make_error("internal_error", "Server error"))
