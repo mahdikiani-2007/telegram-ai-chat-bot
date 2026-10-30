@@ -130,10 +130,10 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
           setBlackRemaining(p.black_ms);
           if (p.move_history) setMoveHistory(p.move_history);
           if (p.white_id !== undefined && p.white_id !== null) {
-            setWhitePlayer({ user_id: p.white_id, name: p.white_name || (p.white_id === p.player1_id ? p.player1_name : p.player2_name) || 'سفید' });
+            setWhitePlayer({ user_id: p.white_id, name: p.white_name || 'سفید' });
           }
           if (p.black_id !== undefined && p.black_id !== null) {
-            setBlackPlayer({ user_id: p.black_id, name: p.black_name || (p.black_id === p.player1_id ? p.player1_name : p.player2_name) || 'سیاه' });
+            setBlackPlayer({ user_id: p.black_id, name: p.black_name || 'سیاه' });
           }
           setDrawOfferedBy(p.draw_offered_by || null);
           break;
