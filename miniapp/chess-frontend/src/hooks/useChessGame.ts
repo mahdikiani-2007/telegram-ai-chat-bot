@@ -26,6 +26,8 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
   const [whitePlayer, setWhitePlayer] = useState<PlayerInfo | null>(null);
   const [blackPlayer, setBlackPlayer] = useState<PlayerInfo | null>(null);
   const [opponentConnected, setOpponentConnected] = useState(true);
+  const [isBotGame, setIsBotGame] = useState(false);
+  const [botDifficulty, setBotDifficulty] = useState<'easy' | 'medium' | 'hard' | null>(null);
 
   const [drawOfferedBy, setDrawOfferedBy] = useState<number | null>(null);
   const [socketStatus, setSocketStatus] = useState<'connected' | 'connecting' | 'disconnected'>('disconnected');
@@ -80,6 +82,8 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
         case 'game.start': {
           setWhitePlayer(msg.payload.white);
           setBlackPlayer(msg.payload.black);
+          setIsBotGame(Boolean(msg.payload.is_bot_game));
+          setBotDifficulty(msg.payload.bot_difficulty || null);
           setStatus('active');
           chess.load(msg.payload.fen);
           authoritativeFenRef.current = msg.payload.fen;
@@ -135,6 +139,8 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
           if (p.black_id !== undefined && p.black_id !== null) {
             setBlackPlayer({ user_id: p.black_id, name: p.black_name || 'سیاه' });
           }
+          setIsBotGame(Boolean(p.is_bot_game));
+          setBotDifficulty(p.bot_difficulty || null);
           setDrawOfferedBy(p.draw_offered_by || null);
           break;
         }
@@ -292,6 +298,8 @@ export function useChessGame({ roomId, currentUserId, onGameEnd }: UseChessGameP
     myColor,
     isMyTurn,
     opponentConnected,
+    isBotGame,
+    botDifficulty,
     drawOfferedBy,
     socketStatus,
     makeMove,
