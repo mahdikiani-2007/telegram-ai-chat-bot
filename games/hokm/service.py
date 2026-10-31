@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from dataclasses import asdict
 from enum import Enum
 import json
@@ -21,6 +22,8 @@ from realtime.manager import ConnectionManager
 from repositories.games import GameRepository
 
 log = logging.getLogger("L-bot")
+DISCONNECT_GRACE_SECONDS = 90
+REPLACEMENT_AI_DIFFICULTY = "medium"
 
 EngineType = Union[TwoPlayerHokmEngine, ThreePlayerHokmEngine, FourPlayerHokmEngine]
 
@@ -988,10 +991,71 @@ class HokmService:
                         await self._broadcast_room_state(room)
                         break
 
+    async def _replace_expired_disconnected_players(self, room: HokmRoom, now: float) -> None:
+        """Take over a disconnected seat with AI after the reconnect grace period."""
+        async with room.lock:
+            stage = room.engine.state.stage
+            if stage in (HokmStage.WAITING, HokmStage.MATCH_ENDED):
+                return
+
+            replaced = False
+            for player in room.engine.players:
+                if player.is_ai or player.disconnect_time is None:
+                    continue
+                if now - player.disconnect_time < DISCONNECT_GRACE_SECONDS:
+                    continue
+
+                former_user_id = player.user_id
+                digest = hashlib.sha256(
+                    f"{room.room_id}:{player.seat}".encode("utf-8")
+                ).digest()
+                bot_user_id = -(int.from_bytes(digest[:6], "big") + 1)
+
+                self._user_to_room.pop(former_user_id, None)
+                await self.manager.leave_room(former_user_id, room.room_id)
+
+                player.user_id = bot_user_id
+                player.name = f"ربات جایگزین {player.seat + 1}"
+                player.is_ai = True
+                player.ai_difficulty = REPLACEMENT_AI_DIFFICULTY
+                player.is_connected = True
+                player.disconnect_time = None
+
+                if 0 <= player.seat < len(room.seat_slots):
+                    room.seat_slots[player.seat] = {
+                        "user_id": bot_user_id,
+                        "name": player.name,
+                        "team": player.team,
+                        "is_ai": True,
+                        "ai_difficulty": REPLACEMENT_AI_DIFFICULTY,
+                        "is_connected": True,
+                    }
+
+                room.rematch_votes.discard(former_user_id)
+                replaced = True
+                log.info(
+                    "Hokm room %s: replaced disconnected user %d at seat %d with AI",
+                    room.room_id,
+                    former_user_id,
+                    player.seat,
+                )
+
+            if replaced:
+                room.seq += 1
+                room.updated_at = now
+                self._persist_room(room)
+                await self._broadcast_room_state(room)
+                await self._check_ai_turn(room)
+
     async def check_timeouts(self) -> None:
         """Schedule at most one timeout resolver per room."""
         now = time.time()
         for room in list(self.rooms.values()):
+            if room.engine.state.stage in (HokmStage.WAITING, HokmStage.MATCH_ENDED):
+                continue
+
+            await self._replace_expired_disconnected_players(room, now)
+
             if room.engine.state.stage not in (
                 HokmStage.PLAYING,
                 HokmStage.TRUMP_SELECTION,
