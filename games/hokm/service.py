@@ -315,11 +315,18 @@ class HokmService:
             if room.engine.state.stage != HokmStage.MATCH_ENDED:
                 return False, "مسابقه هنوز تمام نشده است.", None
 
-            human_ids = {
+            seated_humans = {
                 player.user_id for player in room.engine.players if not player.is_ai
             }
-            if user_id not in human_ids:
-                return False, "فقط بازیکنان مسابقه می‌توانند درخواست بازی مجدد بدهند.", None
+            connected_humans = seated_humans.intersection(
+                self.manager.get_room_members(room.room_id)
+            )
+            if user_id not in connected_humans:
+                return False, "برای درخواست بازی مجدد باید در اتاق مسابقه متصل باشید.", None
+            human_ids = connected_humans
+
+            if user_id in room.rematch_votes:
+                return False, f"درخواست شما قبلاً ثبت شده است ({len(room.rematch_votes)}/{len(human_ids)}).", None
 
             if room.rematch_room_id:
                 rematch = self.rooms.get(room.rematch_room_id)
@@ -336,7 +343,23 @@ class HokmService:
             if not human_ids.issubset(room.rematch_votes):
                 return False, f"درخواست ثبت شد ({len(room.rematch_votes)}/{len(human_ids)}). منتظر موافقت سایر بازیکنان.", None
 
-            old_players = [asdict(player) for player in room.engine.players]
+            old_players = []
+            for player in room.engine.players:
+                player_data = asdict(player)
+                if not player.is_ai and player.user_id not in human_ids:
+                    # A human who left the finished room is replaced by a
+                    # medium bot in the rematch rather than being silently
+                    # enrolled without consent.
+                    player_data.update({
+                        "user_id": -(2000 + player.seat),
+                        "name": "هوش مصنوعی (متوسط)",
+                        "is_ai": True,
+                        "ai_difficulty": "medium",
+                        "cards": [],
+                        "is_connected": True,
+                        "disconnect_time": None,
+                    })
+                old_players.append(player_data)
             old_room_id = room.room_id
             mode = room.game_mode.value
             old_host_id = room.host_id
@@ -831,10 +854,17 @@ class HokmService:
         public_state["invite_code"] = room.invite_code
         public_state["room_id"] = room.room_id
         public_state["seq"] = room.seq
+        connected_humans = {
+            player.user_id
+            for player in room.engine.players
+            if not player.is_ai and player.user_id in self.manager.get_room_members(room.room_id)
+        }
         public_state["rematch_votes"] = sorted(room.rematch_votes)
-        public_state["rematch_required"] = sum(
-            1 for player in room.engine.players if not player.is_ai
-        ) if room.engine.state.stage == HokmStage.MATCH_ENDED else 0
+        public_state["rematch_required"] = (
+            len(connected_humans)
+            if room.engine.state.stage == HokmStage.MATCH_ENDED
+            else 0
+        )
 
         # If in waiting stage before game starts, populate players from seat_slots
         if room.engine.state.stage == HokmStage.WAITING:
