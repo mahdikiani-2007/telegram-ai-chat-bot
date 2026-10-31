@@ -483,8 +483,16 @@ class HokmService:
         return room
 
     async def join_room(self, user_id: int, user_name: str, room_id_or_code: str) -> Tuple[bool, str, Optional[HokmRoom]]:
-        """Joins an existing room."""
+        """Joins an existing room without stealing a player from another active match."""
         room_id = self.code_to_room.get(room_id_or_code.upper()) or room_id_or_code
+        existing_room_id = self._user_to_room.get(user_id)
+        if existing_room_id and existing_room_id != room_id:
+            existing_room = self.rooms.get(existing_room_id)
+            if existing_room:
+                if existing_room.engine.state.stage not in (HokmStage.WAITING, HokmStage.MATCH_ENDED):
+                    return False, "شما در یک بازی فعال دیگر حضور دارید.", None
+                await self.leave_room(existing_room_id, user_id)
+
         room = self.rooms.get(room_id)
         if not room:
             return False, "اتاق پیدا نشد.", None
@@ -547,10 +555,14 @@ class HokmService:
             return False, "اتاق پیدا نشد."
         if room.host_id != host_id:
             return False, "فقط سازنده اتاق می‌تواند ربات اضافه کند."
+        if difficulty not in {"easy", "medium", "hard"}:
+            return False, "سطح دشواری ربات نامعتبر است."
         if room.engine.state.stage != HokmStage.WAITING:
             return False, "بازی در حال اجراست."
 
         async with room.lock:
+            if room.engine.state.stage != HokmStage.WAITING:
+                return False, "بازی در حال اجراست."
             empty_seat = None
             for idx, slot in enumerate(room.seat_slots):
                 if slot is None:
