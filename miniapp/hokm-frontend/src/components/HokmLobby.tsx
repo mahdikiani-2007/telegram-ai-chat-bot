@@ -9,6 +9,7 @@ interface HokmLobbyProps {
   onJoinRoom: (code: string) => void;
   onAddAi: (difficulty: string) => void;
   onStartGame: () => void;
+  onLeaveRoom: () => void;
 }
 
 export const HokmLobby: React.FC<HokmLobbyProps> = ({
@@ -20,6 +21,7 @@ export const HokmLobby: React.FC<HokmLobbyProps> = ({
   onJoinRoom,
   onAddAi,
   onStartGame,
+  onLeaveRoom,
 }) => {
   const [selectedMode, setSelectedMode] = useState<'hokm_4p' | 'hokm_3p' | 'hokm_2p'>('hokm_4p');
   const [turnTime, setTurnTime] = useState<number>(30);
@@ -165,9 +167,14 @@ export const HokmLobby: React.FC<HokmLobbyProps> = ({
             </button>
           </div>
 
-          <button className="gold-btn" style={{ width: '100%', padding: '14px' }} onClick={onStartGame}>
-            🚀 شروع مسابقه
-          </button>
+          <div className="waiting-room-actions">
+            <button className="gold-btn" onClick={onStartGame}>
+              🚀 شروع مسابقه
+            </button>
+            <button className="outline-btn leave-room-btn" onClick={onLeaveRoom}>
+              خروج و لغو اتاق
+            </button>
+          </div>
         </div>
       ) : (
         /* Normal Lobby Mode Selection */
