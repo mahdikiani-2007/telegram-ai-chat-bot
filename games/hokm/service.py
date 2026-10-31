@@ -402,7 +402,8 @@ class HokmService:
                     "team": player.get("team"),
                     "is_ai": player.get("is_ai", False),
                     "ai_difficulty": player.get("ai_difficulty"),
-                    "is_connected": player.get("is_connected", True),
+                    "is_connected": True,
+                    "disconnect_time": None,
                 }
                 for player in old_players
             ]
