@@ -50,7 +50,6 @@ export const App: React.FC = () => {
     opponentConnected,
     drawOfferedBy,
     isBotGame,
-    botDifficulty,
     makeMove,
     resign,
     offerDraw,
