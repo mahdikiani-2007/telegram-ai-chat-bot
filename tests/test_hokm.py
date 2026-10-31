@@ -414,6 +414,45 @@ async def test_hokm_host_cancel_cleans_all_seats_and_allows_new_room(tmp_path):
 
 
 @pytest.mark.anyio
+async def test_completed_hokm_match_recovers_for_rematch_after_restart(tmp_path):
+    db_file = str(tmp_path / "hokm_completed_recovery.db")
+    repo = GameRepository(db_file)
+    manager = ConnectionManager()
+    service = HokmService(repo, manager)
+
+    room = await service.create_room(921, "Host", "hokm_2p")
+    ok, _message, room = await service.join_room(922, "Guest", room.invite_code)
+    assert ok and room is not None
+    room.engine.initialize_players(room.seat_slots)
+    room.engine.state.stage = HokmStage.MATCH_ENDED
+    room.engine.state.match_winner_seat = 0
+    service._persist_room(room)
+    assert repo.get_room(room.room_id)["status"] == "completed"
+
+    recovered_manager = ConnectionManager()
+    await recovered_manager.connect(_DummyWebSocket(), 921, "Host")
+    await recovered_manager.connect(_DummyWebSocket(), 922, "Guest")
+    recovered_service = HokmService(GameRepository(db_file), recovered_manager)
+
+    assert await recovered_service.recover_from_db() == 1
+    recovered = recovered_service.rooms[room.room_id]
+    assert recovered.engine.state.stage == HokmStage.MATCH_ENDED
+    assert recovered.engine.players[0].user_id == 921
+    assert recovered.engine.players[1].user_id == 922
+    assert recovered.engine.players[0].is_connected is False
+
+    await recovered_manager.join_room(921, recovered.room_id)
+    await recovered_manager.join_room(922, recovered.room_id)
+    first_vote, _message, new_room = await recovered_service.request_rematch(recovered.room_id, 921)
+    assert first_vote is False and new_room is None
+
+    second_vote, _message, new_room = await recovered_service.request_rematch(recovered.room_id, 922)
+    assert second_vote is True and new_room is not None
+    assert new_room.engine.state.stage == HokmStage.CEREMONY
+    assert [player.user_id for player in new_room.engine.players] == [921, 922]
+
+
+@pytest.mark.anyio
 async def test_hokm_player_cannot_join_two_active_rooms(tmp_path):
     repo = GameRepository(str(tmp_path / "hokm_multi_room.db"))
     service = HokmService(repo, ConnectionManager())
