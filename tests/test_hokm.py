@@ -6,7 +6,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 from games.hokm.ai.strategy import choose_card_easy, choose_card_hard, choose_card_medium, choose_draft_card_ai, choose_trump_ai
 from games.hokm.service import HokmService
-from realtime.manager import ConnectionManager
 from games.hokm.four_player.engine import FourPlayerHokmEngine
 from games.hokm.shared.cards import Card, Rank, Suit
 from games.hokm.shared.deck import create_3p_51_deck, create_standard_52_deck
@@ -105,8 +104,12 @@ def test_four_player_engine_complete_hand():
     # Team reached 7 tricks
     team_a_tricks = engine.players[0].tricks_won + engine.players[2].tricks_won
     team_b_tricks = engine.players[1].tricks_won + engine.players[3].tricks_won
-    assert max(team_a_tricks, team_b_tricks) == 7
+    assert max(team_a_tricks, team_b_tricks) >= 7
+    assert team_a_tricks + team_b_tricks == tricks_played
     assert engine.state.stage in (HokmStage.HAND_ENDED, HokmStage.MATCH_ENDED)
+    public = engine.get_public_state()
+    assert len(public["last_completed_trick"]["cards"]) == 4
+    assert all("cards" not in player for player in public["players"])
 
 
 def test_three_player_engine_distribution_and_play():
@@ -250,6 +253,9 @@ async def test_hokm_private_snapshot_recovers_waiting_and_dealt_hands(tmp_path):
     assert all(len(player.cards) == 5 for player in recovered.engine.players)
     assert recovered.engine.players[2].is_ai is True
     assert recovered.engine.players[3].is_ai is True
+    assert recovered.engine.players[0].is_connected is False
+    assert recovered.engine.players[1].is_connected is False
+    assert recovered.seat_slots[0]["is_connected"] is False
     assert recovered.engine.get_private_state(0)["cards"] == recovered.engine.players[0].cards
     assert "stock_cards" not in recovered.engine.get_public_state()
 
@@ -311,6 +317,56 @@ def test_ai_strategies():
     # 2P draft AI
     draft_choice = choose_draft_card_ai(["AS", "2C"], "S")
     assert draft_choice == "AS"
+
+
+@pytest.mark.anyio
+async def test_hokm_host_cancel_cleans_all_seats_and_allows_new_room(tmp_path):
+    repo = GameRepository(str(tmp_path / "hokm_cancel_room.db"))
+    manager = ConnectionManager()
+    service = HokmService(repo, manager)
+    host_ws = _DummyWebSocket()
+    guest_ws = _DummyWebSocket()
+    await manager.connect(host_ws, 701, "Host")
+    await manager.connect(guest_ws, 702, "Guest")
+
+    room = await service.create_room(701, "Host", "hokm_3p")
+    await manager.join_room(701, room.room_id)
+    ok, _message, joined = await service.join_room(702, "Guest", room.invite_code)
+    assert ok and joined is room
+    await manager.join_room(702, room.room_id)
+
+    left, _message = await service.leave_room(room.room_id, 701)
+    assert left is True
+    assert room.invite_code not in service.code_to_room
+    assert service._user_to_room.get(701) is None
+    assert service._user_to_room.get(702) is None
+    assert not manager.get_room_members(room.room_id)
+    assert repo.get_room(room.room_id)["status"] == "abandoned"
+
+    next_room = await service.create_room(701, "Host", "hokm_3p")
+    assert next_room.room_id != room.room_id
+    assert next_room.engine.state.stage == HokmStage.WAITING
+
+
+@pytest.mark.anyio
+async def test_hokm_player_cannot_join_two_active_rooms(tmp_path):
+    repo = GameRepository(str(tmp_path / "hokm_multi_room.db"))
+    service = HokmService(repo, ConnectionManager())
+
+    first = await service.create_room(801, "Host 1", "hokm_2p")
+    ok, _message, _ = await service.join_room(802, "Player", first.invite_code)
+    assert ok
+
+    first.engine.initialize_players(first.seat_slots)
+    first.engine.state.stage = HokmStage.PLAYING
+    service._persist_room(first)
+
+    second = await service.create_room(803, "Host 2", "hokm_2p")
+    ok, message, joined = await service.join_room(802, "Player", second.invite_code)
+    assert ok is False
+    assert joined is None
+    assert "فعال" in message
+    assert service._user_to_room[802] == first.room_id
 
 
 def test_elo_ratings(tmp_path):
