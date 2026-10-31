@@ -457,14 +457,17 @@ def create_app() -> FastAPI:
         is_ranked = bool(data.get("is_ranked", False))
         allow_spec = bool(data.get("allow_spectators", True))
 
-        room = await hokm_service.create_room(
-            host_id=user["user_id"],
-            host_name=user["name"],
-            mode_str=mode,
-            turn_time_limit=time_limit,
-            is_ranked=is_ranked,
-            allow_spectators=allow_spec,
-        )
+        try:
+            room = await hokm_service.create_room(
+                host_id=user["user_id"],
+                host_name=user["name"],
+                mode_str=mode,
+                turn_time_limit=time_limit,
+                is_ranked=is_ranked,
+                allow_spectators=allow_spec,
+            )
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=409)
         return {
             "ok": True,
             "room_id": room.room_id,
