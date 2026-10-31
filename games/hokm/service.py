@@ -476,6 +476,8 @@ class HokmService:
             if room.engine.state.stage != HokmStage.WAITING:
                 if room.allow_spectators:
                     room.spectators.add(user_id)
+                    self._user_to_room[user_id] = room_id
+                    self._persist_room(room)
                     return True, "ورود به عنوان تماشاگر.", room
                 return False, "بازی قبلاً شروع شده است.", None
 
@@ -489,6 +491,8 @@ class HokmService:
             if empty_seat is None:
                 if room.allow_spectators:
                     room.spectators.add(user_id)
+                    self._user_to_room[user_id] = room_id
+                    self._persist_room(room)
                     return True, "ظرفیت بازیکنان تکمیل است (ورود به عنوان تماشاگر).", room
                 return False, "ظرفیت اتاق تکمیل است.", None
 
@@ -827,6 +831,10 @@ class HokmService:
         public_state["invite_code"] = room.invite_code
         public_state["room_id"] = room.room_id
         public_state["seq"] = room.seq
+        public_state["rematch_votes"] = sorted(room.rematch_votes)
+        public_state["rematch_required"] = sum(
+            1 for player in room.engine.players if not player.is_ai
+        ) if room.engine.state.stage == HokmStage.MATCH_ENDED else 0
 
         # If in waiting stage before game starts, populate players from seat_slots
         if room.engine.state.stage == HokmStage.WAITING:
