@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/chess-multiplayer-sync-orientation
+      - feat/chess-room-lifecycle-and-bot
   pull_request:
     branches:
       - main
