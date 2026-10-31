@@ -978,3 +978,35 @@ button:disabled {
     transition-duration: 0.01ms !important;
   }
 }
+
+.playing-card.static {
+  cursor: default;
+}
+
+.spectator-chip {
+  padding: 4px 9px;
+  color: #c4b5fd;
+  border: 1px solid rgba(196, 181, 253, 0.32);
+  border-radius: 999px;
+  background: rgba(91, 33, 182, 0.16);
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.turn-deadline-chip.urgent {
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.7);
+  background: rgba(127, 29, 29, 0.38);
+  animation: deadline-blink 0.45s ease-in-out infinite alternate;
+}
+
+@keyframes deadline-blink {
+  from { box-shadow: 0 0 0 rgba(239, 68, 68, 0); }
+  to { box-shadow: 0 0 13px rgba(239, 68, 68, 0.45); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .turn-deadline-chip.urgent {
+    animation: none;
+  }
+}
