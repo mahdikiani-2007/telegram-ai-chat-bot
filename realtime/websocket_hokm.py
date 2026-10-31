@@ -96,13 +96,17 @@ async def handle_hokm_websocket(
                 diff = payload.get("difficulty", "medium")
                 time_limit = int(payload.get("turn_time_limit", 30))
 
-                room = await hokm_service.create_solo_ai_game(
-                    host_id=user_id,
-                    host_name=name,
-                    mode_str=mode,
-                    difficulty=diff,
-                    turn_time_limit=time_limit,
-                )
+                try:
+                    room = await hokm_service.create_solo_ai_game(
+                        host_id=user_id,
+                        host_name=name,
+                        mode_str=mode,
+                        difficulty=diff,
+                        turn_time_limit=time_limit,
+                    )
+                except ValueError as exc:
+                    await ws.send_json({"type": "error", "error": str(exc)})
+                    continue
                 await manager.join_room(user_id, room.room_id)
                 await ws.send_json({
                     "type": "hokm.room.created",
@@ -118,14 +122,18 @@ async def handle_hokm_websocket(
                 is_ranked = bool(payload.get("is_ranked", False))
                 allow_spec = bool(payload.get("allow_spectators", True))
 
-                room = await hokm_service.create_room(
-                    host_id=user_id,
-                    host_name=name,
-                    mode_str=mode,
-                    turn_time_limit=time_limit,
-                    is_ranked=is_ranked,
-                    allow_spectators=allow_spec,
-                )
+                try:
+                    room = await hokm_service.create_room(
+                        host_id=user_id,
+                        host_name=name,
+                        mode_str=mode,
+                        turn_time_limit=time_limit,
+                        is_ranked=is_ranked,
+                        allow_spectators=allow_spec,
+                    )
+                except (ValueError, TypeError) as exc:
+                    await ws.send_json({"type": "error", "error": str(exc) or "پارامترهای اتاق نامعتبر هستند."})
+                    continue
                 await manager.join_room(user_id, room.room_id)
                 await ws.send_json({
                     "type": "hokm.room.created",
