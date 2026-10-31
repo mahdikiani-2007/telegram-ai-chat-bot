@@ -1,8 +1,16 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { HokmLobby } from './components/HokmLobby';
 import { HokmTable } from './components/HokmTable';
-import { CeremonyModal, TrumpSelectModal, TwoPlayerDraftModal, MatchOverModal } from './components/Modals';
+import {
+  CeremonyModal,
+  HandSummaryModal,
+  MatchOverModal,
+  TrumpSelectModal,
+  TwoPlayerDraftModal,
+} from './components/Modals';
 import './styles/hokm.css';
+
+type AuthContext = { initData: string; devUser?: number };
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
@@ -10,100 +18,255 @@ export const App: React.FC = () => {
   const [publicState, setPublicState] = useState<any>(null);
   const [privateState, setPrivateState] = useState<any>(null);
   const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
-  const [isConnected, setIsConnected] = useState<boolean>(false);
-  const [statusMessage, setStatusMessage] = useState<string>('');
+  const [isConnected, setIsConnected] = useState(false);
+  const [statusMessage, setStatusMessage] = useState('');
+  const [rematchMessage, setRematchMessage] = useState('');
 
   const wsRef = useRef<WebSocket | null>(null);
+  const authRef = useRef<AuthContext>({ initData: '' });
+  const shouldReconnectRef = useRef(true);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
+  const sequenceRef = useRef(-1);
+  const roomIdRef = useRef<string | null>(null);
+  const statusTimerRef = useRef<number | null>(null);
+  const connectInFlightRef = useRef(false);
+  const connectionGenerationRef = useRef(0);
 
-  // Parse Telegram WebApp or dev_user fallback
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const devUserParam = params.get('user');
-    const tg = (window as any).Telegram?.WebApp;
-    if (tg) {
-      tg.ready();
-      tg.expand();
-    }
-
-    const initData = tg?.initData || '';
-    const devUser = devUserParam ? parseInt(devUserParam, 10) : (!initData ? 1 : undefined);
-
-    // Fetch initial profile & ticket
-    fetch('/api/hokm/profile', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData, dev_user: devUser }),
-    })
-      .then((r) => r.json())
-      .then((data) => {
-        if (data.ok) {
-          setUser({ user_id: data.user_id, name: data.name });
-          setRatings(data.ratings);
-          // Connect WebSocket with ticket
-          fetchTicketAndConnect(initData, devUser);
-        }
-      })
-      .catch((err) => console.error('Profile fetch failed', err));
-  }, []);
-
-  const fetchTicketAndConnect = (initData: string, devUser?: number) => {
-    fetch('/api/hokm/ticket', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ initData, dev_user: devUser }),
-    })
-      .then((r) => r.json())
-      .then((res) => {
-        if (res.ok && res.ticket) {
-          connectWebSocket(res.ticket);
-        }
-      });
+  const setActiveRoom = (roomId: string | null) => {
+    roomIdRef.current = roomId;
+    setActiveRoomId(roomId);
   };
 
-  const connectWebSocket = (ticket: string) => {
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws/hokm?ticket=${ticket}`;
-    const ws = new WebSocket(wsUrl);
-
-    ws.onopen = () => {
-      setIsConnected(true);
+  const showStatus = (message: string) => {
+    setStatusMessage(message);
+    if (statusTimerRef.current !== null) {
+      window.clearTimeout(statusTimerRef.current);
+    }
+    statusTimerRef.current = window.setTimeout(() => {
       setStatusMessage('');
-    };
+      statusTimerRef.current = null;
+    }, 5000);
+  };
 
-    ws.onmessage = (evt) => {
+  useEffect(() => {
+    let disposed = false;
+    const generation = ++connectionGenerationRef.current;
+    const isCurrentGeneration = () => !disposed && connectionGenerationRef.current === generation;
+    shouldReconnectRef.current = true;
+
+    const params = new URLSearchParams(window.location.search);
+    const devUserParam = params.get('user') || params.get('dev_user');
+    const tg = (window as any).Telegram?.WebApp;
+    if (tg) {
       try {
-        const msg = JSON.parse(evt.data);
-        if (msg.type === 'hokm.game.state') {
-          setPublicState(msg.public);
-          setPrivateState(msg.private);
-          setActiveRoomId(msg.room_id);
-        } else if (msg.type === 'hokm.room.created' || msg.type === 'hokm.room.joined') {
-          setActiveRoomId(msg.room_id);
-        } else if (msg.type === 'error') {
-          setStatusMessage(msg.error || 'خطایی رخ داد.');
-          setTimeout(() => setStatusMessage(''), 4000);
+        tg.ready();
+        tg.expand();
+        tg.setHeaderColor?.('#03140d');
+        tg.setBackgroundColor?.('#03140d');
+      } catch {}
+    }
+
+    const auth: AuthContext = {
+      initData: tg?.initData || '',
+      devUser: devUserParam
+        ? Number.parseInt(devUserParam, 10)
+        : (!tg?.initData ? 1 : undefined),
+    };
+    authRef.current = auth;
+
+    const fetchTicketAndConnect = async (): Promise<void> => {
+      if (!isCurrentGeneration() || !shouldReconnectRef.current || connectInFlightRef.current) return;
+      const existing = wsRef.current;
+      if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+
+      connectInFlightRef.current = true;
+      try {
+        const response = await fetch('/api/hokm/ticket', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(authRef.current),
+        });
+        const ticketData = await response.json();
+        if (!response.ok || !ticketData.ok || !ticketData.ticket) {
+          throw new Error(ticketData.error || 'دریافت مجوز اتصال ناموفق بود.');
         }
-      } catch (err) {
-        console.error('WS parse error', err);
+        if (!isCurrentGeneration() || !shouldReconnectRef.current) return;
+
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const socket = new WebSocket(
+          `${protocol}//${window.location.host}/ws/hokm?ticket=${encodeURIComponent(ticketData.ticket)}`
+        );
+        wsRef.current = socket;
+
+        socket.onopen = () => {
+          if (!isCurrentGeneration() || wsRef.current !== socket) return;
+          reconnectAttemptRef.current = 0;
+          setIsConnected(true);
+          setStatusMessage('');
+        };
+
+        socket.onmessage = (event) => {
+          if (disposed || wsRef.current !== socket) return;
+          try {
+            const message = JSON.parse(event.data);
+            if (message.type === 'hokm.game.state') {
+              const incomingRoomId = String(message.room_id || '');
+              const incomingSeq = Number(message.seq ?? message.public?.seq ?? -1);
+
+              if (roomIdRef.current !== incomingRoomId) {
+                sequenceRef.current = -1;
+                setActiveRoom(incomingRoomId || null);
+              }
+              if (incomingSeq >= 0 && incomingSeq < sequenceRef.current) return;
+              if (incomingSeq >= 0) sequenceRef.current = incomingSeq;
+
+              setPublicState({
+                ...message.public,
+                seq: incomingSeq >= 0 ? incomingSeq : message.public?.seq,
+              });
+              setPrivateState(message.private || null);
+              setActiveRoom(incomingRoomId || null);
+              setRematchMessage('');
+              return;
+            }
+
+            if (message.type === 'hokm.room.created' || message.type === 'hokm.room.joined') {
+              const incomingRoomId = String(message.room_id || '');
+              if (incomingRoomId && roomIdRef.current !== incomingRoomId) {
+                sequenceRef.current = -1;
+                setActiveRoom(incomingRoomId);
+                setPublicState(null);
+                setPrivateState(null);
+              }
+              return;
+            }
+
+            if (message.type === 'hokm.room.left') {
+              if (!message.room_id || message.room_id === roomIdRef.current) {
+                sequenceRef.current = -1;
+                setActiveRoom(null);
+                setPublicState(null);
+                setPrivateState(null);
+                setRematchMessage('');
+              }
+              return;
+            }
+
+            if (message.type === 'hokm.match.rematch.pending') {
+              setRematchMessage(message.message || 'در انتظار موافقت سایر بازیکنان...');
+              return;
+            }
+
+            if (message.type === 'hokm.match.rematch.started') {
+              const nextRoomId = String(message.room_id || '');
+              if (nextRoomId) {
+                sequenceRef.current = -1;
+                setActiveRoom(nextRoomId);
+                setPublicState(null);
+                setPrivateState(null);
+                setRematchMessage('');
+              }
+              return;
+            }
+
+            if (message.type === 'error') {
+              showStatus(String(message.error || 'خطایی رخ داد.'));
+            }
+          } catch (error) {
+            console.error('Hokm WebSocket message error:', error);
+          }
+        };
+
+        socket.onclose = () => {
+          if (wsRef.current !== socket) return;
+          wsRef.current = null;
+          setIsConnected(false);
+          if (!isCurrentGeneration() || !shouldReconnectRef.current || reconnectTimerRef.current !== null) return;
+
+          reconnectAttemptRef.current += 1;
+          const delay = Math.min(1000 * (2 ** (reconnectAttemptRef.current - 1)), 15000);
+          reconnectTimerRef.current = window.setTimeout(() => {
+            reconnectTimerRef.current = null;
+            void fetchTicketAndConnect();
+          }, delay);
+        };
+
+        socket.onerror = () => {
+          if (wsRef.current === socket) setIsConnected(false);
+        };
+      } catch (error) {
+        if (isCurrentGeneration() && shouldReconnectRef.current && reconnectTimerRef.current === null) {
+          showStatus(error instanceof Error ? error.message : 'اتصال به سرور حکم برقرار نشد.');
+          reconnectAttemptRef.current += 1;
+          const delay = Math.min(1000 * (2 ** (reconnectAttemptRef.current - 1)), 15000);
+          reconnectTimerRef.current = window.setTimeout(() => {
+            reconnectTimerRef.current = null;
+            void fetchTicketAndConnect();
+          }, delay);
+        }
+      } finally {
+        if (connectionGenerationRef.current === generation) {
+          connectInFlightRef.current = false;
+        }
       }
     };
 
-    ws.onclose = () => {
-      setIsConnected(false);
-      // Reconnect after 3s
-      setTimeout(() => {
-        const params = new URLSearchParams(window.location.search);
-        const devUser = params.get('user') ? parseInt(params.get('user')!, 10) : undefined;
-        fetchTicketAndConnect((window as any).Telegram?.WebApp?.initData || '', devUser);
-      }, 3000);
+    const loadProfile = async () => {
+      try {
+        const response = await fetch('/api/hokm/profile', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(auth),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || 'دریافت پروفایل ناموفق بود.');
+        if (!isCurrentGeneration()) return;
+        setUser({ user_id: data.user_id, name: data.name });
+        setRatings(data.ratings || {});
+        void fetchTicketAndConnect();
+      } catch (error) {
+        if (isCurrentGeneration()) showStatus(error instanceof Error ? error.message : 'دریافت پروفایل ناموفق بود.');
+      }
     };
 
-    wsRef.current = ws;
-  };
+    void loadProfile();
 
-  const sendWs = (type: string, payload: any) => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type, payload }));
+    return () => {
+      disposed = true;
+      if (connectionGenerationRef.current === generation) {
+        connectionGenerationRef.current += 1;
+        connectInFlightRef.current = false;
+      }
+      shouldReconnectRef.current = false;
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (statusTimerRef.current !== null) {
+        window.clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = null;
+      }
+      const socket = wsRef.current;
+      wsRef.current = null;
+      if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, 'app_unmounted');
+    };
+  }, []);
+
+  const sendWs = (type: string, payload: any): boolean => {
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      showStatus('اتصال بازی برقرار نیست؛ چند لحظه دیگر دوباره امتحان کنید.');
+      return false;
+    }
+    try {
+      socket.send(JSON.stringify({ type, payload }));
+      return true;
+    } catch {
+      showStatus('ارسال درخواست ناموفق بود.');
+      return false;
     }
   };
 
@@ -116,76 +279,64 @@ export const App: React.FC = () => {
   };
 
   const handleJoinRoom = (code: string) => {
-    sendWs('hokm.room.join', { room_id_or_code: code });
+    sendWs('hokm.room.join', { room_id_or_code: code.trim().toUpperCase() });
   };
 
   const handleAddAi = (difficulty: string) => {
-    sendWs('hokm.room.add_ai', { room_id: activeRoomId, difficulty });
+    if (activeRoomId) sendWs('hokm.room.add_ai', { room_id: activeRoomId, difficulty });
   };
 
   const handleStartGame = () => {
-    sendWs('hokm.room.start', { room_id: activeRoomId });
+    if (activeRoomId) sendWs('hokm.room.start', { room_id: activeRoomId });
   };
 
   const handleSelectTrump = (suit: string) => {
-    sendWs('hokm.trump.select', { room_id: activeRoomId, suit });
+    if (activeRoomId) sendWs('hokm.trump.select', { room_id: activeRoomId, suit });
   };
 
   const handleSelectDraftCard = (card: string) => {
-    sendWs('hokm.card.select', { room_id: activeRoomId, card });
+    if (activeRoomId) sendWs('hokm.card.select', { room_id: activeRoomId, card });
   };
 
   const handlePlayCard = (card: string) => {
-    sendWs('hokm.card.play', { room_id: activeRoomId, card });
+    if (activeRoomId) sendWs('hokm.card.play', { room_id: activeRoomId, card });
   };
 
   const handleSendChat = (text: string) => {
-    sendWs('hokm.chat.message', { room_id: activeRoomId, text });
+    if (activeRoomId) sendWs('hokm.chat.message', { room_id: activeRoomId, text });
+  };
+
+  const handleLeaveRoom = () => {
+    if (activeRoomId) {
+      sendWs('hokm.room.leave', { room_id: activeRoomId });
+    }
+  };
+
+  const handleRematch = () => {
+    if (activeRoomId) {
+      setRematchMessage('درخواست بازی مجدد ارسال شد؛ منتظر موافقت سایر بازیکنان...');
+      sendWs('hokm.match.rematch', { room_id: activeRoomId });
+    }
   };
 
   const isHakem = publicState?.hakem_seat === privateState?.seat;
-  const isPlaying = publicState && publicState.stage !== 'waiting';
+  const isPlaying = Boolean(publicState && publicState.stage !== 'waiting');
 
   return (
     <div className="hokm-container">
-      {/* Top Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <span style={{ fontSize: 22 }}>👑</span>
-          <span style={{ fontWeight: 900, fontSize: 18, color: 'var(--gold)' }}>حکم آنلاین</span>
+      <div className="hokm-header">
+        <div className="hokm-brand">
+          <span>👑</span>
+          <span>حکم آنلاین</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-dim)' }}>
-          <span
-            style={{
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              background: isConnected ? 'var(--success)' : 'var(--danger)',
-              display: 'inline-block',
-            }}
-          />
-          <span>{isConnected ? 'متصل' : 'درحال اتصال...'}</span>
+        <div className={`connection-pill ${isConnected ? 'connected' : 'disconnected'}`}>
+          <span className="connection-dot" />
+          {isConnected ? 'متصل' : 'در حال اتصال…'}
         </div>
       </div>
 
-      {statusMessage && (
-        <div
-          style={{
-            background: 'rgba(239, 68, 68, 0.2)',
-            border: '1px solid var(--danger)',
-            color: '#fca5a5',
-            padding: '8px 12px',
-            borderRadius: 10,
-            fontSize: 13,
-            marginBottom: 10,
-            textAlign: 'center',
-          }}
-        >
-          ⚠️ {statusMessage}
-        </div>
-      )}
+      {statusMessage && <div className="hokm-status-message" role="status">⚠️ {statusMessage}</div>}
 
-      {/* Main View: Lobby or Game Table */}
       {!isPlaying ? (
         <HokmLobby
           user={user}
@@ -196,6 +347,7 @@ export const App: React.FC = () => {
           onJoinRoom={handleJoinRoom}
           onAddAi={handleAddAi}
           onStartGame={handleStartGame}
+          onLeaveRoom={handleLeaveRoom}
         />
       ) : (
         <HokmTable
@@ -207,7 +359,6 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* Modals */}
       {publicState?.stage === 'ceremony' && (
         <CeremonyModal
           ceremonyCards={publicState.ceremony_cards || {}}
@@ -227,25 +378,34 @@ export const App: React.FC = () => {
         />
       )}
 
+      {publicState?.stage === 'hand_ended' && publicState?.last_hand_summary && (
+        <HandSummaryModal
+          summary={publicState.last_hand_summary}
+          gameMode={publicState.game_mode}
+          players={publicState.players || []}
+        />
+      )}
+
       {publicState?.stage === 'match_ended' && (
         <MatchOverModal
           isWinner={
-            publicState.match_winner_team !== undefined
-              ? (publicState.players?.find((p: any) => p.seat === privateState?.seat)?.team === publicState.match_winner_team)
-              : (publicState.match_winner_seat === privateState?.seat)
+            publicState.match_winner_team !== undefined && publicState.match_winner_team !== null
+              ? (publicState.players?.find((player: any) => player.seat === privateState?.seat)?.team === publicState.match_winner_team)
+              : publicState.match_winner_seat === privateState?.seat
           }
           scoreText={
             publicState.game_mode === 'hokm_4p'
               ? `${publicState.team_a_match_points} - ${publicState.team_b_match_points}`
-              : `${publicState.players?.map((p: any) => `${p.name}: ${p.match_score}`).join(' | ')}`
+              : (publicState.players || []).map((player: any) => `${player.name}: ${player.match_score}`).join(' | ')
           }
-          onRematch={handleStartGame}
-          onReturnLobby={() => {
-            setPublicState(null);
-            setActiveRoomId(null);
-          }}
+          rematchVotes={publicState.rematch_votes?.length || 0}
+          rematchRequired={publicState.rematch_required || 0}
+          onRematch={handleRematch}
+          onReturnLobby={handleLeaveRoom}
         />
       )}
+
+      {rematchMessage && <div className="rematch-toast">{rematchMessage}</div>}
     </div>
   );
 };

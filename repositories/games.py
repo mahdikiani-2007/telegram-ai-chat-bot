@@ -656,6 +656,37 @@ class GameRepository:
                 )
             conn.commit()
 
+    def replace_hokm_room_players(
+        self,
+        room_id: str,
+        players: List[Dict[str, Any]],
+    ) -> None:
+        """Atomically replace the persisted Hokm seat list for a room."""
+        now = time.time()
+        with self._write_lock:
+            conn = self._connect()
+            conn.execute("DELETE FROM game_players WHERE room_id = ?", (room_id,))
+            for player in players:
+                conn.execute(
+                    """
+                    INSERT INTO game_players (
+                        room_id, user_id, seat, team, player_type, ai_difficulty,
+                        connection_status, joined_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        room_id,
+                        int(player["user_id"]),
+                        int(player["seat"]),
+                        player.get("team"),
+                        "ai" if player.get("is_ai") else "human",
+                        player.get("ai_difficulty"),
+                        "connected" if player.get("is_connected", True) else "disconnected",
+                        now,
+                    ),
+                )
+            conn.commit()
+
     def update_hokm_room_state(
         self,
         room_id: str,
@@ -736,15 +767,22 @@ class GameRepository:
             )
             conn.commit()
 
-    def get_active_hokm_rooms(self) -> List[Dict[str, Any]]:
+    def get_active_hokm_rooms(self, completed_since: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Return live rooms plus recently completed matches that still allow rematch."""
         conn = self._connect()
+        cutoff = completed_since if completed_since is not None else time.time() - 86400
         cur = conn.execute(
             """
-            SELECT id, game_type, status, player1_id, state_json, current_seq, invite_code, created_at
+            SELECT *
             FROM game_rooms
-            WHERE game_type LIKE 'hokm%' AND status IN ('waiting', 'active')
+            WHERE game_type LIKE 'hokm%'
+              AND (
+                  status IN ('waiting', 'active')
+                  OR (status = 'completed' AND updated_at >= ?)
+              )
             ORDER BY created_at DESC
-            """
+            """,
+            (cutoff,),
         )
         return [dict(r) for r in cur.fetchall()]
 

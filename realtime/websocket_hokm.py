@@ -38,14 +38,20 @@ async def handle_hokm_websocket(
         if current_room_id and current_room_id in hokm_service.rooms:
             room = hokm_service.rooms[current_room_id]
             await manager.join_room(user_id, current_room_id)
-            # Mark reconnected
-            for p in room.engine.players:
-                if p.user_id == user_id:
-                    p.is_connected = True
-                    p.disconnect_time = None
-                    break
-            # Send current state
-            await hokm_service._broadcast_room_state(room)
+            async with room.lock:
+                # Restore both active-player and waiting-seat presence.
+                for player in room.engine.players:
+                    if player.user_id == user_id:
+                        player.is_connected = True
+                        player.disconnect_time = None
+                        break
+                else:
+                    for slot in room.seat_slots:
+                        if slot and slot.get("user_id") == user_id:
+                            slot["is_connected"] = True
+                            break
+                hokm_service._persist_room(room)
+                await hokm_service._broadcast_room_state(room)
     except Exception:
         log.error("Hokm reconnection sync error for user %d", user_id, exc_info=True)
 
@@ -71,8 +77,15 @@ async def handle_hokm_websocket(
                 await ws.send_json({"type": "error", "error": "invalid_json"})
                 continue
 
+            if not isinstance(data, dict):
+                await ws.send_json({"type": "error", "error": "invalid_message"})
+                continue
+
             msg_type = data.get("type")
             payload = data.get("payload", {})
+            if not isinstance(payload, dict):
+                await ws.send_json({"type": "error", "error": "invalid_payload"})
+                continue
 
             if msg_type == "ping":
                 await ws.send_json({"type": "pong"})
@@ -83,13 +96,17 @@ async def handle_hokm_websocket(
                 diff = payload.get("difficulty", "medium")
                 time_limit = int(payload.get("turn_time_limit", 30))
 
-                room = await hokm_service.create_solo_ai_game(
-                    host_id=user_id,
-                    host_name=name,
-                    mode_str=mode,
-                    difficulty=diff,
-                    turn_time_limit=time_limit,
-                )
+                try:
+                    room = await hokm_service.create_solo_ai_game(
+                        host_id=user_id,
+                        host_name=name,
+                        mode_str=mode,
+                        difficulty=diff,
+                        turn_time_limit=time_limit,
+                    )
+                except ValueError as exc:
+                    await ws.send_json({"type": "error", "error": str(exc)})
+                    continue
                 await manager.join_room(user_id, room.room_id)
                 await ws.send_json({
                     "type": "hokm.room.created",
@@ -105,14 +122,18 @@ async def handle_hokm_websocket(
                 is_ranked = bool(payload.get("is_ranked", False))
                 allow_spec = bool(payload.get("allow_spectators", True))
 
-                room = await hokm_service.create_room(
-                    host_id=user_id,
-                    host_name=name,
-                    mode_str=mode,
-                    turn_time_limit=time_limit,
-                    is_ranked=is_ranked,
-                    allow_spectators=allow_spec,
-                )
+                try:
+                    room = await hokm_service.create_room(
+                        host_id=user_id,
+                        host_name=name,
+                        mode_str=mode,
+                        turn_time_limit=time_limit,
+                        is_ranked=is_ranked,
+                        allow_spectators=allow_spec,
+                    )
+                except (ValueError, TypeError) as exc:
+                    await ws.send_json({"type": "error", "error": str(exc) or "پارامترهای اتاق نامعتبر هستند."})
+                    continue
                 await manager.join_room(user_id, room.room_id)
                 await ws.send_json({
                     "type": "hokm.room.created",
@@ -136,6 +157,40 @@ async def handle_hokm_websocket(
                         "message": msg,
                     })
                     await hokm_service._broadcast_room_state(room)
+
+            elif msg_type == "hokm.room.leave":
+                room_id = str(payload.get("room_id") or "").strip()
+                if not room_id:
+                    await ws.send_json({"type": "error", "error": "شناسه اتاق الزامی است."})
+                    continue
+                ok, message = await hokm_service.leave_room(room_id, user_id)
+                if not ok:
+                    await ws.send_json({"type": "error", "error": message})
+                else:
+                    await ws.send_json({
+                        "type": "hokm.room.left",
+                        "room_id": room_id,
+                        "message": message,
+                    })
+
+            elif msg_type == "hokm.match.rematch":
+                room_id = str(payload.get("room_id") or "").strip()
+                if not room_id:
+                    await ws.send_json({"type": "error", "error": "شناسه مسابقه الزامی است."})
+                    continue
+                ok, message, new_room = await hokm_service.request_rematch(room_id, user_id)
+                if new_room is not None:
+                    await ws.send_json({
+                        "type": "hokm.match.rematch.started",
+                        "room_id": new_room.room_id,
+                        "message": message,
+                    })
+                elif not ok:
+                    await ws.send_json({
+                        "type": "hokm.match.rematch.pending",
+                        "room_id": room_id,
+                        "message": message,
+                    })
 
             elif msg_type == "hokm.room.add_ai":
                 room_id = payload.get("room_id")
@@ -175,7 +230,18 @@ async def handle_hokm_websocket(
             elif msg_type == "hokm.chat.message":
                 room_id = payload.get("room_id")
                 text = str(payload.get("text", "")).strip()[:150]
-                if text and room_id:
+                room = hokm_service.rooms.get(room_id) if room_id else None
+                is_member = bool(
+                    room and (
+                        user_id in room.spectators
+                        or any(
+                            slot and slot.get("user_id") == user_id
+                            for slot in room.seat_slots
+                        )
+                        or any(player.user_id == user_id for player in room.engine.players)
+                    )
+                )
+                if text and is_member:
                     await manager.broadcast_to_room(
                         room_id,
                         {
@@ -185,11 +251,24 @@ async def handle_hokm_websocket(
                             "text": text,
                         },
                     )
+                elif text:
+                    await ws.send_json({"type": "error", "error": "اجازه ارسال پیام در این اتاق را ندارید."})
 
             elif msg_type == "hokm.chat.reaction":
                 room_id = payload.get("room_id")
                 reaction = str(payload.get("reaction", "")).strip()[:10]
-                if reaction and room_id:
+                room = hokm_service.rooms.get(room_id) if room_id else None
+                is_member = bool(
+                    room and (
+                        user_id in room.spectators
+                        or any(
+                            slot and slot.get("user_id") == user_id
+                            for slot in room.seat_slots
+                        )
+                        or any(player.user_id == user_id for player in room.engine.players)
+                    )
+                )
+                if reaction and is_member:
                     await manager.broadcast_to_room(
                         room_id,
                         {
@@ -199,6 +278,8 @@ async def handle_hokm_websocket(
                             "reaction": reaction,
                         },
                     )
+                elif reaction:
+                    await ws.send_json({"type": "error", "error": "اجازه ارسال واکنش در این اتاق را ندارید."})
 
             else:
                 await ws.send_json({"type": "error", "error": f"Unknown action: {msg_type}"})

@@ -136,9 +136,76 @@ export const TwoPlayerDraftModal: React.FC<TwoPlayerDraftModalProps> = ({
   );
 };
 
+interface HandSummaryModalProps {
+  summary: any;
+  gameMode: string;
+  players: any[];
+}
+
+export const HandSummaryModal: React.FC<HandSummaryModalProps> = ({
+  summary,
+  gameMode,
+  players,
+}) => {
+  if (!summary) return null;
+
+  const isTeam = gameMode === 'hokm_4p';
+  const isDraw = Boolean(summary.is_draw);
+  const winner = isTeam
+    ? (summary.winner_team === null || summary.winner_team === undefined
+        ? 'بدون برنده'
+        : `تیم ${summary.winner_team === 0 ? 'الف' : 'ب'}`)
+    : (summary.winner_seat === null || summary.winner_seat === undefined
+        ? 'بدون برنده'
+        : players.find((player) => player.seat === summary.winner_seat)?.name || 'بازیکن برنده');
+
+  const kotLabel = summary.is_hakem_kot
+    ? 'حاکم‌کوت'
+    : summary.is_kot
+      ? 'کوت'
+      : null;
+
+  const trickRows = isTeam
+    ? [
+        { label: 'تیم الف', value: summary.tricks_team_a ?? 0 },
+        { label: 'تیم ب', value: summary.tricks_team_b ?? 0 },
+      ]
+    : players.map((player) => ({
+        label: player.name,
+        value: summary.tricks_by_seat?.[String(player.seat)] ?? summary.tricks_by_seat?.[player.seat] ?? 0,
+      }));
+
+  return (
+    <div className="modal-overlay hand-summary-overlay">
+      <div className="modal-card hand-summary-card">
+        <div className="hand-summary-icon">{isDraw ? '🤝' : kotLabel ? '👑' : '🃏'}</div>
+        <div className="hand-summary-eyebrow">نتیجه دست {summary.hand_number}</div>
+        <h2 className="hand-summary-title">
+          {isDraw ? 'دست مساوی شد' : `برنده: ${winner}`}
+        </h2>
+        {kotLabel && <div className="kot-ribbon">{kotLabel}</div>}
+        <div className="hand-summary-points">
+          {summary.points_awarded ?? 0} <span>امتیاز</span>
+        </div>
+        <div className="hand-summary-tricks">
+          {trickRows.map((row) => (
+            <div key={row.label} className="hand-summary-trick-row">
+              <span>{row.label}</span>
+              <b>{row.value} دور</b>
+            </div>
+          ))}
+        </div>
+        <div className="hand-summary-hint">دست بعدی به‌زودی شروع می‌شود…</div>
+      </div>
+    </div>
+  );
+};
+
 interface MatchOverModalProps {
   isWinner: boolean;
   scoreText: string;
+  rematchVotes?: number;
+  rematchRequired?: number;
   onRematch: () => void;
   onReturnLobby: () => void;
 }
@@ -146,6 +213,8 @@ interface MatchOverModalProps {
 export const MatchOverModal: React.FC<MatchOverModalProps> = ({
   isWinner,
   scoreText,
+  rematchVotes = 0,
+  rematchRequired = 0,
   onRematch,
   onReturnLobby,
 }) => {
@@ -162,12 +231,17 @@ export const MatchOverModal: React.FC<MatchOverModalProps> = ({
 
         <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
           <button className="gold-btn" onClick={onRematch}>
-            🔄 بازی دوباره
+            🔄 درخواست بازی مجدد
           </button>
           <button className="outline-btn" onClick={onReturnLobby}>
             🏠 خروج به لابی
           </button>
         </div>
+        {rematchRequired > 1 && (
+          <div className="rematch-vote-status">
+            موافقت برای بازی مجدد: {rematchVotes} از {rematchRequired}
+          </div>
+        )}
       </div>
     </div>
   );

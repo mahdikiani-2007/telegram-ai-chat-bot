@@ -252,6 +252,20 @@ class FourPlayerHokmEngine:
                 {"seat": p.seat, "player_id": p.player_id, "card": p.card}
                 for p in self.state.current_trick
             ],
+            "last_completed_trick": (
+                {
+                    "lead_seat": self.state.completed_tricks[-1].lead_seat,
+                    "lead_card": self.state.completed_tricks[-1].lead_card,
+                    "winner_seat": self.state.completed_tricks[-1].winner_seat,
+                    "winner_id": self.state.completed_tricks[-1].winner_id,
+                    "cards": [
+                        {"seat": p.seat, "player_id": p.player_id, "card": p.card}
+                        for p in self.state.completed_tricks[-1].cards
+                    ],
+                }
+                if self.state.completed_tricks
+                else None
+            ),
             "team_a_match_points": self.state.team_a_match_points,
             "team_b_match_points": self.state.team_b_match_points,
             "hand_number": self.state.hand_number,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { PlayingCard } from './Cards';
 import { triggerHaptic, sounds } from './AudioHaptics';
 
@@ -17,6 +17,12 @@ const SUIT_NAMES: Record<string, string> = {
   C: 'گشنیز ♣',
 };
 
+const formatCard = (code: string) => {
+  const rank = code.slice(0, -1);
+  const suit = SUIT_NAMES[code.slice(-1)] || '';
+  return `${rank} ${suit}`;
+};
+
 export const HokmTable: React.FC<HokmTableProps> = ({
   publicState,
   privateState,
@@ -25,218 +31,263 @@ export const HokmTable: React.FC<HokmTableProps> = ({
   onSendChat,
 }) => {
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
+  const [resolvedTrick, setResolvedTrick] = useState<any[]>([]);
+  const [resolvingWinner, setResolvingWinner] = useState<number | null>(null);
+  const lastCompletedKeyRef = useRef<string | null>(null);
+  const previousTrickLengthRef = useRef(0);
+  const [now, setNow] = useState(() => Date.now() / 1000);
 
   const players: any[] = publicState?.players || [];
-  const mySeat = privateState?.seat ?? 0;
+  const mySeat = privateState?.seat ?? -1;
+  const layoutSeat = mySeat >= 0 ? mySeat : 0;
   const myCards: string[] = privateState?.cards || [];
   const legalMoves: string[] = privateState?.legal_moves || [];
   const currentTrick: any[] = publicState?.current_trick || [];
+  const lastCompleted = publicState?.last_completed_trick || null;
   const trumpSuit = publicState?.trump_suit;
   const currentTurnSeat = publicState?.current_turn_seat;
   const isMyTurn = currentTurnSeat === mySeat;
   const isFourPlayer = publicState?.game_mode === 'hokm_4p';
-  const isThreePlayer = publicState?.game_mode === 'hokm_3p';
+  const totalSeats = Math.max(2, Number(players.length) || (isFourPlayer ? 4 : 3));
+  const myPlayer = players.find((player) => player?.seat === mySeat);
+  const myTeam = myPlayer?.team;
+  const turnDeadline = Number(publicState?.action_deadline || 0);
+  const seq = Number(publicState?.seq || 0);
 
-  // Order other players relative to mySeat
-  const totalSeats = players.length || 4;
+  const phaseLabel = useMemo(() => {
+    const labels: Record<string, string> = {
+      waiting: 'اتاق انتظار',
+      ceremony: 'تعیین حاکم',
+      trump_selection: 'انتخاب خال حکم',
+      two_player_draft: 'انتخاب کارت',
+      dealing: 'پخش کارت‌ها',
+      playing: 'در حال بازی',
+      hand_ended: 'پایان دست',
+      match_ended: 'پایان مسابقه',
+    };
+    return labels[publicState?.stage] || 'در حال آماده‌سازی';
+  }, [publicState?.stage]);
+
+  useEffect(() => {
+    setSelectedCard(null);
+  }, [seq, currentTurnSeat, currentTrick.length, myCards.length]);
+
+  useEffect(() => {
+    const completedNow = previousTrickLengthRef.current > 0 && currentTrick.length === 0;
+    previousTrickLengthRef.current = currentTrick.length;
+    if (!completedNow || !lastCompleted?.cards?.length) return;
+
+    const key = `${seq}:${lastCompleted.cards.map((card: any) => `${card.seat}-${card.card}`).join('|')}`;
+    if (lastCompletedKeyRef.current === key) return;
+    lastCompletedKeyRef.current = key;
+    setResolvedTrick(lastCompleted.cards);
+    setResolvingWinner(lastCompleted.winner_seat ?? null);
+    const timeout = window.setTimeout(() => {
+      setResolvedTrick([]);
+      setResolvingWinner(null);
+    }, 1050);
+    return () => window.clearTimeout(timeout);
+  }, [seq, currentTrick.length, lastCompleted]);
+
+  useEffect(() => {
+    if (!turnDeadline || !['playing', 'trump_selection', 'two_player_draft'].includes(publicState?.stage)) return;
+    const interval = window.setInterval(() => setNow(Date.now() / 1000), 250);
+    return () => window.clearInterval(interval);
+  }, [turnDeadline, publicState?.stage]);
+
+
+  const displayedTrick = currentTrick.length > 0 ? currentTrick : resolvedTrick;
+  const isResolvingTrick = currentTrick.length === 0 && resolvedTrick.length > 0;
+
   const getRelativePlayer = (offset: number) => {
-    const seatIdx = (mySeat + offset) % totalSeats;
-    return players.find((p) => p.seat === seatIdx);
+    const seatIdx = (layoutSeat + offset) % totalSeats;
+    return players.find((player) => player?.seat === seatIdx);
   };
 
   const handleCardClick = (cardCode: string) => {
-    if (!isMyTurn) return;
-    if (!legalMoves.includes(cardCode)) return;
-
-    if (selectedCard === cardCode) {
-      // Execute play
-      sounds.playCardSlap();
-      triggerHaptic('medium');
-      onPlayCard(cardCode);
-      setSelectedCard(null);
-    } else {
-      sounds.playCardSlap();
-      triggerHaptic('light');
-      setSelectedCard(cardCode);
-    }
+    if (!isMyTurn || !legalMoves.includes(cardCode)) return;
+    setSelectedCard((current) => current === cardCode ? null : cardCode);
+    triggerHaptic('light');
   };
 
-  const handleCenterTableClick = () => {
-    if (selectedCard && isMyTurn && legalMoves.includes(selectedCard)) {
-      sounds.playCardSlap();
-      triggerHaptic('medium');
-      onPlayCard(selectedCard);
-      setSelectedCard(null);
-    }
+  const submitSelectedCard = () => {
+    if (!selectedCard || !isMyTurn || !legalMoves.includes(selectedCard)) return;
+    const cardToPlay = selectedCard;
+    setSelectedCard(null);
+    sounds.playCardSlap();
+    triggerHaptic('medium');
+    onPlayCard(cardToPlay);
   };
 
-  // Helper to render a player pod
+  const getTrickCardTransform = (seat: number) => {
+    const relOffset = (seat - layoutSeat + totalSeats) % totalSeats;
+    if (totalSeats === 4) {
+      if (relOffset === 0) return 'translateY(36px)';
+      if (relOffset === 1) return 'translateX(40px)';
+      if (relOffset === 2) return 'translateY(-36px)';
+      return 'translateX(-40px)';
+    }
+    if (totalSeats === 3) {
+      if (relOffset === 0) return 'translateY(36px)';
+      if (relOffset === 1) return 'translate(36px, -24px)';
+      return 'translate(-36px, -24px)';
+    }
+    return relOffset === 0 ? 'translateY(32px)' : 'translateY(-32px)';
+  };
+
   const renderPlayerPod = (player: any) => {
     if (!player) return null;
     const isHakem = publicState?.hakem_seat === player.seat;
     const isActive = currentTurnSeat === player.seat;
+    const wonLastTrick = isResolvingTrick && resolvingWinner === player.seat;
 
     return (
-      <div className={`player-pod ${isActive ? 'active' : ''}`}>
+      <div className={`player-pod ${isActive ? 'active' : ''} ${wonLastTrick ? 'won-trick' : ''}`} key={player.seat}>
         <div className="avatar-ring">
           {player.is_ai ? '🤖' : '👤'}
           {isHakem && <span className="crown-badge">👑</span>}
         </div>
         <span className="player-name">{player.name}</span>
         <span className="player-tricks-count">
-          دست: {player.tricks_won} ({player.cards_remaining} برگ)
+          دست: {player.tricks_won ?? 0} ({player.cards_remaining ?? 0} برگ)
         </span>
+        {wonLastTrick && <span className="trick-winner-label">برنده‌ی دور</span>}
       </div>
     );
   };
 
-  // Trick cards layout positions
-  const getTrickCardTransform = (seat: number) => {
-    const relOffset = (seat - mySeat + totalSeats) % totalSeats;
-    if (totalSeats === 4) {
-      if (relOffset === 0) return 'translateY(36px)'; // bottom (me)
-      if (relOffset === 1) return 'translateX(40px)';  // right
-      if (relOffset === 2) return 'translateY(-36px)'; // top (partner)
-      return 'translateX(-40px)';                     // left
-    } else if (totalSeats === 3) {
-      if (relOffset === 0) return 'translateY(36px)';
-      if (relOffset === 1) return 'translate(36px, -24px)';
-      return 'translate(-36px, -24px)';
-    } else {
-      // 2-player
-      if (relOffset === 0) return 'translateY(32px)';
-      return 'translateY(-32px)';
+  const renderScore = () => {
+    if (isFourPlayer) {
+      if (myTeam === 0 || myTeam === 1) {
+        const mine = myTeam === 1 ? publicState?.team_b_match_points : publicState?.team_a_match_points;
+        const theirs = myTeam === 1 ? publicState?.team_a_match_points : publicState?.team_b_match_points;
+        return (
+          <span>
+            تیم شما: <b className="my-team-score">{mine ?? 0}</b>
+            <span className="score-separator"> — </span>
+            حریف: <b className="opponent-team-score">{theirs ?? 0}</b>
+          </span>
+        );
+      }
+      return (
+        <span>
+          تیم الف: <b className="my-team-score">{publicState?.team_a_match_points ?? 0}</b>
+          <span className="score-separator"> — </span>
+          تیم ب: <b className="opponent-team-score">{publicState?.team_b_match_points ?? 0}</b>
+        </span>
+      );
     }
+    return (
+      <div className="individual-score-list">
+        {players.map((player) => (
+          <span key={player.seat} className={player.seat === mySeat ? 'individual-score mine' : 'individual-score'}>
+            {player.name}: <b>{player.match_score ?? 0}</b>
+          </span>
+        ))}
+      </div>
+    );
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, width: '100%' }}>
-      {/* Table Felt */}
-      <div className="hokm-table">
-        <div className="table-watermark">HOKM</div>
+    <div className="hokm-game-layout">
+      <div className="hokm-game-status">
+        <div className="phase-chip">{phaseLabel}</div>
+        {trumpSuit && <div className="trump-status-chip">حکم: <b>{SUIT_NAMES[trumpSuit] || trumpSuit}</b></div>}
+        <div className="turn-status-chip">
+          {isMyTurn ? 'نوبت شماست' : currentTurnSeat !== null && currentTurnSeat !== undefined
+            ? `نوبت ${players.find((player) => player?.seat === currentTurnSeat)?.name || 'حریف'}`
+            : 'منتظر حرکت'}
+        </div>
+        {turnDeadline > 0 && ['playing', 'trump_selection', 'two_player_draft'].includes(publicState?.stage) && (
+          <div className={`turn-deadline-chip ${turnDeadline - now <= 5 ? 'urgent' : ''}`}>
+            {Math.max(0, Math.ceil(turnDeadline - now))} ثانیه
+          </div>
+        )}
+        {mySeat < 0 && <div className="spectator-chip">تماشاگر</div>}
+      </div>
 
-        {/* Trump Pill */}
+      <div className="hokm-table">
+        <div className="table-watermark" aria-hidden="true">HOKM</div>
         {trumpSuit && (
           <div className="trump-badge">
             <span>حکم:</span>
             <span style={{ color: 'var(--gold-light)' }}>{SUIT_NAMES[trumpSuit] || trumpSuit}</span>
           </div>
         )}
+        <div className="score-banner">{renderScore()}</div>
 
-        {/* Match Points Banner */}
-        <div className="score-banner">
-          {isFourPlayer ? (
-            <span>
-              ما: <b style={{ color: 'var(--gold)' }}>{publicState?.team_a_match_points}</b> — آنها:{' '}
-              <b style={{ color: '#93c5fd' }}>{publicState?.team_b_match_points}</b>
-            </span>
-          ) : (
-            <span>دست {publicState?.hand_number || 1} (هدف: ۷)</span>
-          )}
-        </div>
-
-        {/* TOP SEAT */}
-        <div style={{ display: 'flex', justifyContent: 'center', width: '100%', marginTop: 28 }}>
+        <div className="table-seat-top">
           {totalSeats === 4 && renderPlayerPod(getRelativePlayer(2))}
           {totalSeats === 2 && renderPlayerPod(getRelativePlayer(1))}
-          {totalSeats === 3 && (
-            <div style={{ display: 'flex', justifyContent: 'space-around', width: '100%' }}>
-              {renderPlayerPod(getRelativePlayer(1))}
-              {renderPlayerPod(getRelativePlayer(2))}
-            </div>
-          )}
+          {totalSeats === 3 && <>{renderPlayerPod(getRelativePlayer(1))}{renderPlayerPod(getRelativePlayer(2))}</>}
         </div>
 
-        {/* MIDDLE ROW (for 4P: Left & Right seats + Center Trick) */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            position: 'relative',
-            height: 140,
-          }}
-        >
-          {totalSeats === 4 ? renderPlayerPod(getRelativePlayer(3)) : <div />}
-
-          {/* Center Trick Pile */}
-          <div className="trick-center" onClick={handleCenterTableClick}>
-            {currentTrick.map((played: any, idx: number) => (
+        <div className={`table-middle-row ${totalSeats === 3 ? 'three-player' : ''}`}>
+          {totalSeats === 4 ? renderPlayerPod(getRelativePlayer(3)) : <div className="side-seat-placeholder" />}
+          <div className={`trick-center ${isResolvingTrick ? 'resolving' : ''}`}>
+            {displayedTrick.map((played: any, idx: number) => (
               <div
-                key={`${played.seat}-${played.card}`}
+                key={`${publicState?.hand_number || 0}-${played.seat}-${played.card}`}
                 className="trick-card-slot"
-                style={{
-                  transform: getTrickCardTransform(played.seat),
-                  zIndex: idx + 5,
-                }}
+                style={{ transform: getTrickCardTransform(played.seat), zIndex: idx + 5 }}
               >
-                <PlayingCard code={played.card} isPlayable={false} />
+                <div className="trick-card-motion">
+                  <PlayingCard code={played.card} isPlayable={false} />
+                </div>
               </div>
             ))}
           </div>
-
-          {totalSeats === 4 ? renderPlayerPod(getRelativePlayer(1)) : <div />}
+          {totalSeats === 4 ? renderPlayerPod(getRelativePlayer(1)) : <div className="side-seat-placeholder" />}
         </div>
 
-        {/* BOTTOM SEAT: My Pod & Action Status */}
-        <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12 }}>
-          {renderPlayerPod(players.find((p) => p.seat === mySeat))}
-          {isMyTurn && (
-            <div
-              style={{
-                background: 'var(--gold-glow)',
-                border: '1px solid var(--gold)',
-                color: '#fef08a',
-                padding: '4px 10px',
-                borderRadius: 999,
-                fontSize: 12,
-                fontWeight: 800,
-                animation: 'pulse 1s infinite alternate',
-              }}
-            >
-              ⏳ نوبت شماست
+        <div className="table-seat-bottom">
+          {renderPlayerPod(myPlayer)}
+          {isResolvingTrick && resolvingWinner !== null && (
+            <div className="trick-resolution-chip">
+              دور برای {players.find((player) => player?.seat === resolvingWinner)?.name || 'بازیکن'} شد
             </div>
           )}
         </div>
       </div>
 
-      {/* MY HAND CARDS FAN */}
-      <div className="my-hand-container">
-        <div className="my-hand-fan">
-          {myCards.map((code) => {
-            const isPlayable = isMyTurn ? legalMoves.includes(code) : true;
-            const isSelected = selectedCard === code;
-            return (
-              <PlayingCard
-                key={code}
-                code={code}
-                isPlayable={isPlayable}
-                isSelected={isSelected}
-                onClick={() => handleCardClick(code)}
-              />
-            );
-          })}
+      <div className="hand-section">
+        <div className="hand-heading">
+          <b>دست شما</b>
+          <span>{myCards.length} کارت</span>
+          {isMyTurn && <span className="hand-your-turn">نوبت شما</span>}
         </div>
+        <div className={`my-hand-container ${!isMyTurn ? 'not-your-turn' : ''}`}>
+          <div className="my-hand-fan">
+            {myCards.map((code) => {
+              const isPlayable = isMyTurn && legalMoves.includes(code);
+              return (
+                <PlayingCard
+                  key={code}
+                  code={code}
+                  isPlayable={isPlayable}
+                  isDisabled={!isPlayable}
+                  isSelected={selectedCard === code}
+                  onClick={() => handleCardClick(code)}
+                />
+              );
+            })}
+          </div>
+        </div>
+        {isMyTurn && selectedCard && (
+          <div className="selected-card-action">
+            <span>انتخاب‌شده: {formatCard(selectedCard)}</span>
+            <button className="gold-btn play-selected-btn" onClick={submitSelectedCard}>بازی کردن کارت</button>
+            <button className="clear-selection-btn" onClick={() => setSelectedCard(null)}>لغو انتخاب</button>
+          </div>
+        )}
+        {!isMyTurn && publicState?.stage === 'playing' && (
+          <div className="waiting-turn-note">کارت‌ها تا رسیدن نوبت شما غیرفعال هستند.</div>
+        )}
       </div>
 
-      {/* QUICK REACTIONS BAR */}
-      <div style={{ display: 'flex', justifyContent: 'center', gap: 8, padding: '4px 0' }}>
+      <div className="quick-reactions">
         {['👏', '🔥', '👑', 'ایول!', 'دمت گرم', 'خسته نباشی'].map((reaction) => (
-          <button
-            key={reaction}
-            onClick={() => onSendChat(reaction)}
-            style={{
-              background: 'rgba(255,255,255,0.06)',
-              border: '1px solid var(--panel-border)',
-              borderRadius: 8,
-              padding: '4px 8px',
-              fontSize: 12,
-              color: 'var(--text-main)',
-              cursor: 'pointer',
-            }}
-          >
-            {reaction}
-          </button>
+          <button key={reaction} onClick={() => onSendChat(reaction)}>{reaction}</button>
         ))}
       </div>
     </div>
