@@ -440,7 +440,15 @@ class HokmService:
         is_ranked: bool = False,
         allow_spectators: bool = True,
     ) -> HokmRoom:
-        """Creates a new Hokm room."""
+        """Creates a new Hokm room, releasing only old waiting/completed rooms."""
+        existing_room_id = self._user_to_room.get(host_id)
+        if existing_room_id:
+            existing_room = self.rooms.get(existing_room_id)
+            if existing_room:
+                if existing_room.engine.state.stage not in (HokmStage.WAITING, HokmStage.MATCH_ENDED):
+                    raise ValueError("شما در یک بازی فعال دیگر حضور دارید.")
+                await self.leave_room(existing_room_id, host_id)
+
         mode = GameMode(mode_str)
         room_id = f"hokm_{secrets.token_hex(8)}"
         invite_code = self._generate_code()
