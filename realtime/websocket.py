@@ -143,12 +143,34 @@ async def _handle_move(ws, msg: MoveMessage, user_id: int, manager, chess_servic
             await ws.send_json(make_error(res["error"], res.get("message", "Move rejected")))
             return
 
-        # Broadcast state update to both players
+        # Broadcast the human move before asking the AI to respond.
         await manager.send_to_room(msg.game_id, res["state_message"])
 
-        # Broadcast game termination if finished
-        if res.get("finished") and res.get("finished_message"):
-            await manager.send_to_room(msg.game_id, res["finished_message"])
+        if res.get("finished"):
+            if res.get("finished_message"):
+                await manager.send_to_room(msg.game_id, res["finished_message"])
+            return
+
+        # A bot reply is generated only after a successful human move and only
+        # when the authoritative board says it is the bot's turn.
+        room = chess_service.get_room(msg.game_id)
+        if room and room.is_bot_game:
+            bot_res = await chess_service.make_bot_move(msg.game_id)
+            if "error" in bot_res:
+                log.error(
+                    "Bot move failed in room %s: %s",
+                    msg.game_id,
+                    bot_res.get("error"),
+                )
+                await ws.send_json(
+                    make_error("bot_move_failed", "حرکت ربات انجام نشد؛ وضعیت بازی را دوباره همگام‌سازی کنید.")
+                )
+                return
+
+            if bot_res.get("state_message"):
+                await manager.send_to_room(msg.game_id, bot_res["state_message"])
+            if bot_res.get("finished") and bot_res.get("finished_message"):
+                await manager.send_to_room(msg.game_id, bot_res["finished_message"])
     except Exception:
         log.error("Error executing move in room %s", msg.game_id, exc_info=True)
         await ws.send_json(make_error("internal_error", "Server error processing move"))

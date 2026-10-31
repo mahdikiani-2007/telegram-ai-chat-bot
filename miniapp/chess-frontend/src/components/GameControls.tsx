@@ -9,6 +9,7 @@ interface GameControlsProps {
   onAcceptDraw: () => void;
   onDeclineDraw: () => void;
   isGameOver: boolean;
+  canOfferDraw?: boolean;
   onBackToLobby: () => void;
 }
 
@@ -21,6 +22,7 @@ export const GameControls: React.FC<GameControlsProps> = ({
   onAcceptDraw,
   onDeclineDraw,
   isGameOver,
+  canOfferDraw = true,
   onBackToLobby,
 }) => {
   if (isGameOver) {
@@ -53,14 +55,16 @@ export const GameControls: React.FC<GameControlsProps> = ({
         🏳️ تسلیم
       </button>
 
-      <button
-        className="btn-control"
-        onClick={onDrawClick}
-        disabled={drawOfferedByMe}
-        style={{ opacity: drawOfferedByMe ? 0.6 : 1 }}
-      >
-        🤝 {drawOfferedByMe ? 'پیشنهاد ارسال شد' : 'پیشنهاد تساوی'}
-      </button>
+      {canOfferDraw && (
+        <button
+          className="btn-control"
+          onClick={onDrawClick}
+          disabled={drawOfferedByMe}
+          style={{ opacity: drawOfferedByMe ? 0.6 : 1 }}
+        >
+          🤝 {drawOfferedByMe ? 'پیشنهاد ارسال شد' : 'پیشنهاد تساوی'}
+        </button>
+      )}
 
       <button className="btn-control" onClick={onToggleHistory}>
         📜 حرکات

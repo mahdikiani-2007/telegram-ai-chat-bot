@@ -196,7 +196,8 @@ def create_app() -> FastAPI:
         if tc_key not in TIME_CONTROLS:
             tc_key = "blitz_5_0"
 
-        # Check if user already has an active room
+        # Discard abandoned invite rooms before looking for an existing match.
+        await chess_service.abandon_waiting_rooms(user["user_id"])
         active = chess_service.get_rooms_for_player(user["user_id"])
         if active:
             return JSONResponse(
@@ -205,7 +206,70 @@ def create_app() -> FastAPI:
             )
 
         res = await chess_service.create_room(user["user_id"], user["name"], tc_key)
+        if "error" in res:
+            return JSONResponse({"ok": False, **res}, status_code=409)
         return {"ok": True, **res}
+
+    @app.post("/api/chess/cancel")
+    async def cancel_chess_room(request: Request):
+        data = await request.json()
+        user = validate_telegram_init_data(TELEGRAM_TOKEN, data.get("initData"), dev_user=data.get("dev_user"))
+        if not user:
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+
+        room_id = str(data.get("room_id") or "").strip()
+        if not room_id:
+            return JSONResponse({"ok": False, "error": "missing_identifier"}, status_code=400)
+
+        result = await chess_service.cancel_waiting_room(room_id, user["user_id"])
+        if "error" in result:
+            return JSONResponse({"ok": False, **result}, status_code=400)
+        return result
+
+    @app.post("/api/chess/bot")
+    async def create_chess_bot_game(request: Request):
+        data = await request.json()
+        user = validate_telegram_init_data(TELEGRAM_TOKEN, data.get("initData"), dev_user=data.get("dev_user"))
+        if not user:
+            return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+
+        difficulty = str(data.get("difficulty") or "medium").lower()
+        if difficulty not in {"easy", "medium", "hard"}:
+            return JSONResponse({"ok": False, "error": "invalid_difficulty"}, status_code=400)
+
+        tc_key = str(data.get("time_control") or "blitz_5_0")
+        if tc_key not in TIME_CONTROLS:
+            tc_key = "blitz_5_0"
+
+        await chess_service.abandon_waiting_rooms(user["user_id"])
+        active = chess_service.get_rooms_for_player(user["user_id"])
+        if active:
+            return JSONResponse({
+                "ok": False,
+                "error": "already_in_game",
+                "room_id": active[0],
+                "message": "یک بازی فعال دارید؛ ابتدا آن را ادامه دهید یا تمام کنید.",
+            }, status_code=409)
+
+        result = await chess_service.create_bot_game(
+            creator_id=user["user_id"],
+            creator_name=user["name"],
+            difficulty=difficulty,
+            time_control_key=tc_key,
+        )
+        if "error" in result:
+            status = 409 if result["error"] == "already_in_game" else 400
+            return JSONResponse({"ok": False, **result}, status_code=status)
+
+        if result.get("start_message"):
+            await manager.send_to_room(result["room_id"], result["start_message"])
+
+        return {
+            "ok": True,
+            "room_id": result["room_id"],
+            "is_bot_game": True,
+            "bot_difficulty": difficulty,
+        }
 
     @app.post("/api/chess/join")
     async def join_chess_room(request: Request):
@@ -247,6 +311,7 @@ def create_app() -> FastAPI:
         if tc_key not in TIME_CONTROLS:
             tc_key = "blitz_5_0"
 
+        await chess_service.abandon_waiting_rooms(user["user_id"])
         active = chess_service.get_rooms_for_player(user["user_id"])
         if active:
             return JSONResponse(
@@ -289,12 +354,16 @@ def create_app() -> FastAPI:
 
         stats = game_repo.get_stats(user["user_id"], "chess")
         active = chess_service.get_rooms_for_player(user["user_id"])
+        active_rooms = [
+            room_id for room_id in active
+            if (chess_service.get_room(room_id) and chess_service.get_room(room_id).status == "active")
+        ]
         return {
             "ok": True,
             "user_id": user["user_id"],
             "name": user["name"],
             "stats": stats,
-            "active_room": active[0] if active else None,
+            "active_room": active_rooms[0] if active_rooms else None,
         }
 
     @app.get("/api/chess/room/{room_id}")

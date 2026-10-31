@@ -81,6 +81,8 @@ export interface GameState {
   result?: string | null;
   end_reason?: string | null;
   draw_offered_by?: number | null;
+  is_bot_game?: boolean;
+  bot_difficulty?: 'easy' | 'medium' | 'hard' | null;
   time_control?: {
     key: string;
     label: string;
@@ -105,6 +107,8 @@ export type ServerMessage =
         black: PlayerInfo;
         fen: string;
         time_control: TimeControl;
+        is_bot_game?: boolean;
+        bot_difficulty?: 'easy' | 'medium' | 'hard';
       };
     }
   | {
