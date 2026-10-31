@@ -9,7 +9,7 @@ import { PlayerCard } from './components/PlayerCard';
 import { GameControls } from './components/GameControls';
 import { MoveHistory } from './components/MoveHistory';
 import { PromotionModal, ResignConfirmModal, ResultModal } from './components/Modals';
-import { joinRoom } from './services/api';
+import { cancelRoom, joinRoom } from './services/api';
 import { hapticSuccess, hapticTap } from './services/telegram';
 import './styles/chess.css';
 
@@ -49,6 +49,8 @@ export const App: React.FC = () => {
     isMyTurn,
     opponentConnected,
     drawOfferedBy,
+    isBotGame,
+    botDifficulty,
     makeMove,
     resign,
     offerDraw,
@@ -90,7 +92,7 @@ export const App: React.FC = () => {
       tg.BackButton.show();
       const handleBack = () => {
         if (screen === 'waiting') {
-          setScreen('lobby');
+          void cancelWaitingRoom();
         } else if (screen === 'game') {
           if (status === 'active') {
             setShowResignModal(true);
@@ -104,7 +106,7 @@ export const App: React.FC = () => {
         tg.BackButton.offClick(handleBack);
       };
     }
-  }, [screen, tg, status]);
+  }, [screen, tg, status, roomId]);
 
   // Player cards resolution (opponent at top, current player at bottom)
   const isPlayingBlack = myColor === 'black';
@@ -156,7 +158,7 @@ export const App: React.FC = () => {
           roomId={roomId}
           inviteCode={inviteCode}
           onGameStart={() => setScreen('game')}
-          onCancel={() => setScreen('lobby')}
+          onCancel={cancelWaitingRoom}
         />
       )}
 
@@ -212,6 +214,7 @@ export const App: React.FC = () => {
                 onAcceptDraw={acceptDraw}
                 onDeclineDraw={declineDraw}
                 isGameOver={status === 'finished'}
+                canOfferDraw={!isBotGame}
                 onBackToLobby={() => {
                   setScreen('lobby');
                   setShowResultModal(false);
