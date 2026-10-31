@@ -38,6 +38,36 @@ export const ChessLobby: React.FC<ChessLobbyProps> = ({
       .catch((e) => console.debug('Profile load failed', e));
   }, [activeRoomId]);
 
+  const resumableRoomId = activeRoomId || profile?.active_room || null;
+
+  const resumeExistingGame = (error: unknown): boolean => {
+    if (error instanceof ApiError && error.code === 'already_in_game' && error.roomId) {
+      setIsMatching(false);
+      hapticSuccess();
+      onGameJoined(error.roomId);
+      return true;
+    }
+    return false;
+  };
+
+  const handlePlayBot = async () => {
+    setLoading(true);
+    setErrorMessage(null);
+    hapticTap('medium');
+    try {
+      const res = await createBotGame(botDifficulty, selectedTc);
+      hapticSuccess();
+      onGameJoined(res.room_id);
+    } catch (err: any) {
+      if (!resumeExistingGame(err)) {
+        setErrorMessage(err.message || 'خطا در شروع بازی با ربات');
+        hapticError();
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
   // Polling for matchmaking while queued
   useEffect(() => {
     if (!isMatching) return;
