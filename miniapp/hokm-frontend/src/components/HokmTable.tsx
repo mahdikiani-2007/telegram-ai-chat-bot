@@ -34,6 +34,8 @@ export const HokmTable: React.FC<HokmTableProps> = ({
   const [resolvedTrick, setResolvedTrick] = useState<any[]>([]);
   const [resolvingWinner, setResolvingWinner] = useState<number | null>(null);
   const lastCompletedKeyRef = useRef<string | null>(null);
+  const previousTrickLengthRef = useRef(0);
+  const [now, setNow] = useState(() => Date.now() / 1000);
 
   const players: any[] = publicState?.players || [];
   const mySeat = privateState?.seat ?? -1;
@@ -71,8 +73,11 @@ export const HokmTable: React.FC<HokmTableProps> = ({
   }, [seq, currentTurnSeat, currentTrick.length, myCards.length]);
 
   useEffect(() => {
-    if (!lastCompleted?.cards?.length) return;
-    const key = `${publicState?.hand_number || 0}:${lastCompleted.cards.map((card: any) => `${card.seat}-${card.card}`).join('|')}`;
+    const completedNow = previousTrickLengthRef.current > 0 && currentTrick.length === 0;
+    previousTrickLengthRef.current = currentTrick.length;
+    if (!completedNow || !lastCompleted?.cards?.length) return;
+
+    const key = `${seq}:${lastCompleted.cards.map((card: any) => `${card.seat}-${card.card}`).join('|')}`;
     if (lastCompletedKeyRef.current === key) return;
     lastCompletedKeyRef.current = key;
     setResolvedTrick(lastCompleted.cards);
@@ -82,7 +87,14 @@ export const HokmTable: React.FC<HokmTableProps> = ({
       setResolvingWinner(null);
     }, 1050);
     return () => window.clearTimeout(timeout);
-  }, [seq, publicState?.hand_number, lastCompleted]);
+  }, [seq, currentTrick.length, lastCompleted]);
+
+  useEffect(() => {
+    if (!turnDeadline || !['playing', 'trump_selection', 'two_player_draft'].includes(publicState?.stage)) return;
+    const interval = window.setInterval(() => setNow(Date.now() / 1000), 250);
+    return () => window.clearInterval(interval);
+  }, [turnDeadline, publicState?.stage]);
+
 
   const displayedTrick = currentTrick.length > 0 ? currentTrick : resolvedTrick;
   const isResolvingTrick = currentTrick.length === 0 && resolvedTrick.length > 0;
@@ -146,13 +158,22 @@ export const HokmTable: React.FC<HokmTableProps> = ({
 
   const renderScore = () => {
     if (isFourPlayer) {
-      const mine = myTeam === 1 ? publicState?.team_b_match_points : publicState?.team_a_match_points;
-      const theirs = myTeam === 1 ? publicState?.team_a_match_points : publicState?.team_b_match_points;
+      if (myTeam === 0 || myTeam === 1) {
+        const mine = myTeam === 1 ? publicState?.team_b_match_points : publicState?.team_a_match_points;
+        const theirs = myTeam === 1 ? publicState?.team_a_match_points : publicState?.team_b_match_points;
+        return (
+          <span>
+            تیم شما: <b className="my-team-score">{mine ?? 0}</b>
+            <span className="score-separator"> — </span>
+            حریف: <b className="opponent-team-score">{theirs ?? 0}</b>
+          </span>
+        );
+      }
       return (
         <span>
-          تیم شما: <b className="my-team-score">{mine ?? 0}</b>
+          تیم الف: <b className="my-team-score">{publicState?.team_a_match_points ?? 0}</b>
           <span className="score-separator"> — </span>
-          حریف: <b className="opponent-team-score">{theirs ?? 0}</b>
+          تیم ب: <b className="opponent-team-score">{publicState?.team_b_match_points ?? 0}</b>
         </span>
       );
     }
@@ -177,9 +198,12 @@ export const HokmTable: React.FC<HokmTableProps> = ({
             ? `نوبت ${players.find((player) => player?.seat === currentTurnSeat)?.name || 'حریف'}`
             : 'منتظر حرکت'}
         </div>
-        {turnDeadline > 0 && publicState?.stage !== 'hand_ended' && publicState?.stage !== 'match_ended' && (
-          <div className="turn-deadline-chip">مهلت حرکت فعال است</div>
+        {turnDeadline > 0 && ['playing', 'trump_selection', 'two_player_draft'].includes(publicState?.stage) && (
+          <div className={`turn-deadline-chip ${turnDeadline - now <= 5 ? 'urgent' : ''}`}>
+            {Math.max(0, Math.ceil(turnDeadline - now))} ثانیه
+          </div>
         )}
+        {mySeat < 0 && <div className="spectator-chip">تماشاگر</div>}
       </div>
 
       <div className="hokm-table">
