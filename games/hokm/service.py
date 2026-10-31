@@ -304,6 +304,7 @@ class HokmService:
             players=[{"user_id": host_id, "seat": 0, "team": 0 if mode == GameMode.FOUR_PLAYER else None}],
             initial_time_ms=turn_time_limit * 1000,
         )
+        self._persist_room(room)
 
         return room
 
@@ -355,6 +356,7 @@ class HokmService:
                 "ai_difficulty": None,
             }
             self._user_to_room[user_id] = room_id
+            self._persist_room(room)
             return True, "با موفقیت وارد شدید.", room
 
     async def add_ai_player(self, room_id: str, host_id: int, difficulty: str = "medium") -> Tuple[bool, str]:
@@ -392,6 +394,7 @@ class HokmService:
 
             # AI games become unranked
             room.is_ranked = False
+            self._persist_room(room)
 
             await self._broadcast_room_state(room)
             return True, "ربات اضافه شد."
@@ -415,14 +418,7 @@ class HokmService:
             room.engine.start_ceremony()
             room.seq += 1
 
-            # Persist state
-            self.repo.update_hokm_room_state(
-                room_id=room_id,
-                state_json=json.dumps(room.engine.get_public_state()),
-                seq=room.seq,
-                status="active",
-            )
-
+            self._persist_room(room)
             await self._broadcast_room_state(room)
 
             # Wait 2.5s for ceremony animation, then deal first 5 cards
@@ -437,6 +433,7 @@ class HokmService:
         async with room.lock:
             room.engine.start_new_hand()
             room.seq += 1
+            self._persist_room(room)
             await self._broadcast_room_state(room)
             # If Hakem is AI, let AI select trump
             await self._check_ai_turn(room)
@@ -457,12 +454,7 @@ class HokmService:
                 return False, "خال نامعتبر است."
 
             room.seq += 1
-            self.repo.update_hokm_room_state(
-                room_id=room_id,
-                state_json=json.dumps(room.engine.get_public_state()),
-                seq=room.seq,
-            )
-
+            self._persist_room(room)
             await self._broadcast_room_state(room)
             # Check if next turn is AI
             await self._check_ai_turn(room)
@@ -485,6 +477,7 @@ class HokmService:
                 return False, "کارت نامعتبر است."
 
             room.seq += 1
+            self._persist_room(room)
             await self._broadcast_room_state(room)
             await self._check_ai_turn(room)
             return True, "کارت انتخاب شد."
@@ -509,6 +502,8 @@ class HokmService:
             # Check if match ended
             if room.engine.state.stage == HokmStage.MATCH_ENDED:
                 await self._finalize_match(room)
+            else:
+                self._persist_room(room)
 
             await self._broadcast_room_state(room)
 
@@ -641,14 +636,8 @@ class HokmService:
                 loser_uids = [p.user_id for p in engine.players if p.seat != winner_seat]
                 self.repo.update_rating_match([winner_uid], loser_uids, mode_val)
 
-        # Update room status in database
-        self.repo.update_hokm_room_state(
-            room_id=room.room_id,
-            state_json=json.dumps(engine.get_public_state()),
-            seq=room.seq,
-            status="completed",
-            result=f"Winner: {'Team ' + str(winner_team) if winner_team is not None else str(winner_id)}",
-        )
+        room.updated_at = time.time()
+        self._persist_room(room)
 
     async def create_solo_ai_game(
         self,
@@ -754,8 +743,17 @@ class HokmService:
                     p.is_connected = False
                     p.disconnect_time = time.time()
                     room.seq += 1
+                    self._persist_room(room)
                     await self._broadcast_room_state(room)
                     break
+            else:
+                for slot in room.seat_slots:
+                    if slot and slot.get("user_id") == user_id and not slot.get("is_ai"):
+                        slot["is_connected"] = False
+                        room.seq += 1
+                        self._persist_room(room)
+                        await self._broadcast_room_state(room)
+                        break
 
     async def check_timeouts(self) -> None:
         """Periodic checker for turn deadlines."""
