@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { PlayerStats, TIME_CONTROLS, TimeControl } from '../types';
-import { cancelMatchmaking, createRoom, getProfile, joinRoom, matchmake } from '../services/api';
+import { PlayerStats, TIME_CONTROLS } from '../types';
+import { ApiError, cancelMatchmaking, createBotGame, createRoom, getProfile, joinRoom, matchmake } from '../services/api';
 import { hapticError, hapticSuccess, hapticTap } from '../services/telegram';
 
 interface ChessLobbyProps {
@@ -15,7 +15,12 @@ export const ChessLobby: React.FC<ChessLobbyProps> = ({
   activeRoomId,
 }) => {
   const [selectedTc, setSelectedTc] = useState<string>('blitz_5_0');
-  const [profile, setProfile] = useState<{ name: string; stats: PlayerStats } | null>(null);
+  const [profile, setProfile] = useState<{
+    name: string;
+    stats: PlayerStats;
+    active_room: string | null;
+  } | null>(null);
+  const [botDifficulty, setBotDifficulty] = useState<'easy' | 'medium' | 'hard'>('medium');
   const [isMatching, setIsMatching] = useState(false);
   const [inviteInput, setInviteInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -24,10 +29,11 @@ export const ChessLobby: React.FC<ChessLobbyProps> = ({
   useEffect(() => {
     getProfile()
       .then((res) => {
-        setProfile({ name: res.name, stats: res.stats });
-        if (res.active_room && !activeRoomId) {
-          // Can auto-prompt or show resume banner
-        }
+        setProfile({
+          name: res.name,
+          stats: res.stats,
+          active_room: res.active_room,
+        });
       })
       .catch((e) => console.debug('Profile load failed', e));
   }, [activeRoomId]);
@@ -46,8 +52,10 @@ export const ChessLobby: React.FC<ChessLobbyProps> = ({
         }
       } catch (err: any) {
         setIsMatching(false);
-        setErrorMessage(err.message || 'خطا در صف همتایابی');
-        hapticError();
+        if (!resumeExistingGame(err)) {
+          setErrorMessage(err.message || 'خطا در صف همتایابی');
+          hapticError();
+        }
       }
     }, 2500);
 
@@ -63,8 +71,10 @@ export const ChessLobby: React.FC<ChessLobbyProps> = ({
       hapticSuccess();
       onGameCreated(res.room_id, res.invite_code);
     } catch (err: any) {
-      setErrorMessage(err.message || 'خطا در ایجاد اتاق');
-      hapticError();
+      if (!resumeExistingGame(err)) {
+        setErrorMessage(err.message || 'خطا در ایجاد اتاق');
+        hapticError();
+      }
     } finally {
       setLoading(false);
     }
@@ -83,8 +93,10 @@ export const ChessLobby: React.FC<ChessLobbyProps> = ({
         setIsMatching(true);
       }
     } catch (err: any) {
-      setErrorMessage(err.message || 'خطا در شروع بازی تصادفی');
-      hapticError();
+      if (!resumeExistingGame(err)) {
+        setErrorMessage(err.message || 'خطا در شروع بازی تصادفی');
+        hapticError();
+      }
     } finally {
       setLoading(false);
     }
@@ -122,7 +134,7 @@ export const ChessLobby: React.FC<ChessLobbyProps> = ({
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
       {/* Resume banner if player has active match */}
-      {activeRoomId && (
+      {resumableRoomId && (
         <div
           className="glass-panel"
           style={{
@@ -139,7 +151,7 @@ export const ChessLobby: React.FC<ChessLobbyProps> = ({
           <button
             className="btn-primary"
             style={{ width: 'auto', padding: '8px 16px', fontSize: 13 }}
-            onClick={() => onGameJoined(activeRoomId)}
+            onClick={() => onGameJoined(resumableRoomId)}
           >
             ادامه بازی
           </button>
