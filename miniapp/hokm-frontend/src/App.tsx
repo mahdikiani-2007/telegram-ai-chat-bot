@@ -31,6 +31,7 @@ export const App: React.FC = () => {
   const roomIdRef = useRef<string | null>(null);
   const statusTimerRef = useRef<number | null>(null);
   const connectInFlightRef = useRef(false);
+  const connectionGenerationRef = useRef(0);
 
   const setActiveRoom = (roomId: string | null) => {
     roomIdRef.current = roomId;
@@ -50,6 +51,8 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     let disposed = false;
+    const generation = ++connectionGenerationRef.current;
+    const isCurrentGeneration = () => !disposed && connectionGenerationRef.current === generation;
     shouldReconnectRef.current = true;
 
     const params = new URLSearchParams(window.location.search);
@@ -73,7 +76,7 @@ export const App: React.FC = () => {
     authRef.current = auth;
 
     const fetchTicketAndConnect = async (): Promise<void> => {
-      if (disposed || !shouldReconnectRef.current || connectInFlightRef.current) return;
+      if (!isCurrentGeneration() || !shouldReconnectRef.current || connectInFlightRef.current) return;
       const existing = wsRef.current;
       if (existing && (existing.readyState === WebSocket.OPEN || existing.readyState === WebSocket.CONNECTING)) {
         return;
@@ -90,7 +93,7 @@ export const App: React.FC = () => {
         if (!response.ok || !ticketData.ok || !ticketData.ticket) {
           throw new Error(ticketData.error || 'دریافت مجوز اتصال ناموفق بود.');
         }
-        if (disposed || !shouldReconnectRef.current) return;
+        if (!isCurrentGeneration() || !shouldReconnectRef.current) return;
 
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const socket = new WebSocket(
@@ -99,7 +102,7 @@ export const App: React.FC = () => {
         wsRef.current = socket;
 
         socket.onopen = () => {
-          if (disposed || wsRef.current !== socket) return;
+          if (!isCurrentGeneration() || wsRef.current !== socket) return;
           reconnectAttemptRef.current = 0;
           setIsConnected(true);
           setStatusMessage('');
@@ -181,7 +184,7 @@ export const App: React.FC = () => {
           if (wsRef.current !== socket) return;
           wsRef.current = null;
           setIsConnected(false);
-          if (disposed || !shouldReconnectRef.current || reconnectTimerRef.current !== null) return;
+          if (!isCurrentGeneration() || !shouldReconnectRef.current || reconnectTimerRef.current !== null) return;
 
           reconnectAttemptRef.current += 1;
           const delay = Math.min(1000 * (2 ** (reconnectAttemptRef.current - 1)), 15000);
@@ -195,7 +198,7 @@ export const App: React.FC = () => {
           if (wsRef.current === socket) setIsConnected(false);
         };
       } catch (error) {
-        if (!disposed && shouldReconnectRef.current && reconnectTimerRef.current === null) {
+        if (isCurrentGeneration() && shouldReconnectRef.current && reconnectTimerRef.current === null) {
           showStatus(error instanceof Error ? error.message : 'اتصال به سرور حکم برقرار نشد.');
           reconnectAttemptRef.current += 1;
           const delay = Math.min(1000 * (2 ** (reconnectAttemptRef.current - 1)), 15000);
@@ -205,7 +208,9 @@ export const App: React.FC = () => {
           }, delay);
         }
       } finally {
-        connectInFlightRef.current = false;
+        if (connectionGenerationRef.current === generation) {
+          connectInFlightRef.current = false;
+        }
       }
     };
 
@@ -218,12 +223,12 @@ export const App: React.FC = () => {
         });
         const data = await response.json();
         if (!response.ok || !data.ok) throw new Error(data.error || 'دریافت پروفایل ناموفق بود.');
-        if (disposed) return;
+        if (!isCurrentGeneration()) return;
         setUser({ user_id: data.user_id, name: data.name });
         setRatings(data.ratings || {});
         void fetchTicketAndConnect();
       } catch (error) {
-        if (!disposed) showStatus(error instanceof Error ? error.message : 'دریافت پروفایل ناموفق بود.');
+        if (isCurrentGeneration()) showStatus(error instanceof Error ? error.message : 'دریافت پروفایل ناموفق بود.');
       }
     };
 
@@ -231,6 +236,10 @@ export const App: React.FC = () => {
 
     return () => {
       disposed = true;
+      if (connectionGenerationRef.current === generation) {
+        connectionGenerationRef.current += 1;
+        connectInFlightRef.current = false;
+      }
       shouldReconnectRef.current = false;
       if (reconnectTimerRef.current !== null) {
         window.clearTimeout(reconnectTimerRef.current);
