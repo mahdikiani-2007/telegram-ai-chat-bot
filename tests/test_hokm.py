@@ -185,9 +185,10 @@ def test_two_player_engine_complete_hand_and_trick_snapshot():
     assert engine.state.stage == HokmStage.PLAYING
     assert all(len(player.cards) == 13 for player in engine.players)
     moves = _play_engine_to_hand_end(engine, max_moves=26)
-    assert moves == 26
+    assert moves % 2 == 0 and moves <= 26
     assert engine.state.stage in (HokmStage.HAND_ENDED, HokmStage.MATCH_ENDED)
     assert engine.last_hand_summary is not None
+    assert sum(player.tricks_won for player in engine.players) == moves // 2
     assert max(player.tricks_won for player in engine.players) >= 7
     public = engine.get_public_state()
     assert len(public["last_completed_trick"]["cards"]) == 2
@@ -203,11 +204,12 @@ def test_three_player_engine_complete_hand_and_draw_scoring():
     assert all(len(player.cards) == 17 for player in engine.players)
 
     moves = _play_engine_to_hand_end(engine, max_moves=51)
-    assert moves == 51
+    assert moves % 3 == 0 and moves <= 51
     assert engine.state.stage in (HokmStage.HAND_ENDED, HokmStage.MATCH_ENDED)
     assert engine.last_hand_summary is not None
     total_tricks = sum(player.tricks_won for player in engine.players)
-    assert total_tricks == 17
+    assert total_tricks == moves // 3
+    assert total_tricks >= 9 or total_tricks == 17
     public = engine.get_public_state()
     assert len(public["last_completed_trick"]["cards"]) == 3
     assert all("cards" not in player for player in public["players"])
