@@ -32,16 +32,18 @@ const PIP_LAYOUT: Record<number, Array<[number, number]>> = {
   10: [[34, 16], [66, 16], [34, 35], [66, 35], [34, 50], [66, 50], [34, 65], [66, 65], [34, 84], [66, 84]],
 };
 
-const CardBack: React.FC = () => (
+const CardBack: React.FC = () => {
+  const patternId = React.useId().replace(/:/g, '');
+  return (
   <svg className="card-back-art" viewBox="0 0 100 140" aria-hidden="true">
     <defs>
-      <pattern id="hokm-card-guilloche" width="16" height="16" patternUnits="userSpaceOnUse">
+      <pattern id={patternId} width="16" height="16" patternUnits="userSpaceOnUse">
         <path d="M8 0 16 8 8 16 0 8Z M8 3 13 8 8 13 3 8Z" fill="none" stroke="#e6c879" strokeWidth=".65" />
         <circle cx="8" cy="8" r="1.8" fill="#e6c879" />
       </pattern>
     </defs>
     <rect x="3" y="3" width="94" height="134" rx="7" fill="#102d32" />
-    <rect x="6" y="6" width="88" height="128" rx="5" fill="url(#hokm-card-guilloche)" />
+    <rect x="6" y="6" width="88" height="128" rx="5" fill={"url(#" + patternId + ")"} />
     <rect x="10" y="10" width="80" height="120" rx="4" fill="none" stroke="#f5dfa0" strokeWidth="1.5" />
     <rect x="14" y="14" width="72" height="112" rx="3" fill="none" stroke="#b98d3a" strokeWidth=".8" />
     <path d="M50 30 68 48 50 66 32 48Z" fill="#e2c176" stroke="#fff0be" strokeWidth="1.2" />
@@ -50,7 +52,8 @@ const CardBack: React.FC = () => (
     <path d="M50 75c-15 0-21 12-21 20 0 10 10 17 21 17s21-7 21-17c0-8-6-20-21-20Z" fill="#173e3a" stroke="#d7b968" strokeWidth="1.2" />
     <text x="50" y="101" textAnchor="middle" fontSize="20" fill="#f2d891">♛</text>
   </svg>
-);
+  );
+};
 
 const CourtArt: React.FC<{ rank: string; symbol: string; red: boolean }> = ({ rank, symbol, red }) => {
   const ink = red ? '#a51f32' : '#172b35';
