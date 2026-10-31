@@ -1130,6 +1130,8 @@ class HokmService:
                     success, _, _, completed_trick, hand_summary = engine.play_card(cur_seat, lowest_card)
                     if success:
                         room.seq += 1
+                        if completed_trick:
+                            room.trick_resolution_until = time.time() + 2.65
                         if engine.state.stage == HokmStage.MATCH_ENDED:
                             await self._finalize_match(room)
                         else:
@@ -1139,6 +1141,6 @@ class HokmService:
                         if hand_summary and engine.state.stage == HokmStage.HAND_ENDED:
                             asyncio.create_task(self._delay_and_start_next_hand(room.room_id))
                         elif completed_trick:
-                            asyncio.create_task(self._delay_and_check_ai(room.room_id, 0.7))
+                            asyncio.create_task(self._delay_and_check_ai(room.room_id, 2.7))
                         else:
                             await self._check_ai_turn(room)
