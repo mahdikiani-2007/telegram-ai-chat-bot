@@ -4,6 +4,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
+import time
 from games.hokm.ai.strategy import choose_card_easy, choose_card_hard, choose_card_medium, choose_draft_card_ai, choose_trump_ai
 from games.hokm.service import HokmService
 from games.hokm.four_player.engine import FourPlayerHokmEngine
@@ -317,6 +318,70 @@ def test_ai_strategies():
     # 2P draft AI
     draft_choice = choose_draft_card_ai(["AS", "2C"], "S")
     assert draft_choice == "AS"
+
+
+@pytest.mark.anyio
+async def test_hokm_disconnect_grace_replaces_seat_with_ai(tmp_path):
+    repo = GameRepository(str(tmp_path / "hokm_disconnect_grace.db"))
+    manager = ConnectionManager()
+    service = HokmService(repo, manager)
+
+    ids = [901, 902, 903, 904]
+    for uid in ids:
+        await manager.connect(_DummyWebSocket(), uid, f"P{uid}")
+
+    room = await service.create_room(ids[0], "P901", "hokm_4p")
+    await manager.join_room(ids[0], room.room_id)
+    for uid in ids[1:]:
+        ok, _message, joined = await service.join_room(uid, f"P{uid}", room.invite_code)
+        assert ok and joined is room
+        await manager.join_room(uid, room.room_id)
+
+    room.engine.initialize_players(room.seat_slots)
+    room.engine.start_ceremony()
+    room.engine.start_new_hand()
+    hakem = room.engine.state.hakem_seat
+    assert room.engine.choose_trump(hakem, "S") is True
+
+    disconnected = room.engine.players[1]
+    former_user_id = disconnected.user_id
+    original_cards = list(disconnected.cards)
+    disconnected.is_connected = False
+    disconnected.disconnect_time = time.time() - 91
+    room.seat_slots[1]["is_connected"] = False
+    service._persist_room(room)
+
+    await service.check_timeouts()
+
+    replacement = room.engine.players[1]
+    assert replacement.is_ai is True
+    assert replacement.ai_difficulty == "medium"
+    assert replacement.user_id < 0
+    assert replacement.cards == original_cards
+    assert room.seat_slots[1]["is_ai"] is True
+    assert former_user_id not in service._user_to_room
+    assert former_user_id not in manager.get_room_members(room.room_id)
+    assert room.engine.get_public_state()["players"][1]["is_ai"] is True
+
+
+@pytest.mark.anyio
+async def test_hokm_user_cannot_join_a_second_active_room(tmp_path):
+    repo = GameRepository(str(tmp_path / "hokm_active_room_guard.db"))
+    service = HokmService(repo, ConnectionManager())
+
+    first = await service.create_room(911, "Host 1", "hokm_2p")
+    ok, _message, first_room = await service.join_room(912, "Player", first.invite_code)
+    assert ok and first_room is not None
+    first_room.engine.initialize_players(first_room.seat_slots)
+    first_room.engine.state.stage = HokmStage.PLAYING
+    service._persist_room(first_room)
+
+    second = await service.create_room(913, "Host 2", "hokm_2p")
+    ok, message, joined = await service.join_room(912, "Player", second.invite_code)
+    assert ok is False
+    assert joined is None
+    assert "فعال" in message
+    assert service._user_to_room[912] == first_room.room_id
 
 
 @pytest.mark.anyio
