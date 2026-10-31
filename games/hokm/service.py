@@ -535,6 +535,7 @@ class HokmService:
         async with room.lock:
             room.engine.start_new_hand()
             room.seq += 1
+            self._persist_room(room)
             await self._broadcast_room_state(room)
             await self._check_ai_turn(room)
 
@@ -551,6 +552,7 @@ class HokmService:
                 await asyncio.sleep(0.6)
                 engine.choose_trump(hakem_seat, best_trump)
                 room.seq += 1
+                self._persist_room(room)
                 await self._broadcast_room_state(room)
                 await self._check_ai_turn(room)
 
@@ -563,6 +565,7 @@ class HokmService:
                     await asyncio.sleep(0.4)
                     e2.select_draft_card(cur_seat, chosen)
                     room.seq += 1
+                    self._persist_room(room)
                     await self._broadcast_room_state(room)
                     await self._check_ai_turn(room)
 
@@ -589,6 +592,8 @@ class HokmService:
                         room.seq += 1
                         if engine.state.stage == HokmStage.MATCH_ENDED:
                             await self._finalize_match(room)
+                        else:
+                            self._persist_room(room)
                         await self._broadcast_room_state(room)
 
                         if hand_summary and engine.state.stage == HokmStage.HAND_ENDED:
@@ -769,6 +774,9 @@ class HokmService:
             engine = room.engine
             stage = engine.state.stage
             cur_seat = engine.state.current_turn_seat
+            deadline = engine.state.action_deadline
+            if deadline is None or time.time() < deadline:
+                return
 
             if cur_seat is None:
                 return
@@ -800,6 +808,8 @@ class HokmService:
                         room.seq += 1
                         if engine.state.stage == HokmStage.MATCH_ENDED:
                             await self._finalize_match(room)
+                        else:
+                            self._persist_room(room)
                         await self._broadcast_room_state(room)
 
                         if hand_summary and engine.state.stage == HokmStage.HAND_ENDED:
