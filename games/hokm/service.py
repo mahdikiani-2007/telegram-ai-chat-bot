@@ -75,6 +75,7 @@ class HokmService:
         self.rooms: Dict[str, HokmRoom] = {}
         self.code_to_room: Dict[str, str] = {}
         self._user_to_room: Dict[int, str] = {}
+        self._timeout_tasks: Dict[str, asyncio.Task] = {}
 
     @staticmethod
     def _json_default(value: Any) -> Any:
@@ -954,13 +955,32 @@ class HokmService:
                         break
 
     async def check_timeouts(self) -> None:
-        """Periodic checker for turn deadlines."""
+        """Schedule at most one timeout resolver per room."""
         now = time.time()
         for room in list(self.rooms.values()):
-            if room.engine.state.stage in (HokmStage.PLAYING, HokmStage.TRUMP_SELECTION, HokmStage.TWO_PLAYER_DRAFT):
-                deadline = room.engine.state.action_deadline
-                if deadline and now > deadline:
-                    asyncio.create_task(self._resolve_timeout(room))
+            if room.engine.state.stage not in (
+                HokmStage.PLAYING,
+                HokmStage.TRUMP_SELECTION,
+                HokmStage.TWO_PLAYER_DRAFT,
+            ):
+                continue
+            deadline = room.engine.state.action_deadline
+            if deadline is None or now <= deadline:
+                continue
+
+            pending = self._timeout_tasks.get(room.room_id)
+            if pending is not None and not pending.done():
+                continue
+            task = asyncio.create_task(self._resolve_timeout_once(room))
+            self._timeout_tasks[room.room_id] = task
+
+    async def _resolve_timeout_once(self, room: HokmRoom) -> None:
+        try:
+            await self._resolve_timeout(room)
+        finally:
+            current = asyncio.current_task()
+            if self._timeout_tasks.get(room.room_id) is current:
+                self._timeout_tasks.pop(room.room_id, None)
 
     async def _resolve_timeout(self, room: HokmRoom) -> None:
         async with room.lock:
