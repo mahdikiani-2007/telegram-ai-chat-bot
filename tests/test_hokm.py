@@ -450,6 +450,7 @@ async def test_completed_hokm_match_recovers_for_rematch_after_restart(tmp_path)
     assert second_vote is True and new_room is not None
     assert new_room.engine.state.stage == HokmStage.CEREMONY
     assert [player.user_id for player in new_room.engine.players] == [921, 922]
+    assert all(player.is_connected for player in new_room.engine.players)
 
 
 @pytest.mark.anyio
