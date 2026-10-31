@@ -1093,9 +1093,11 @@ button:disabled {
   mix-blend-mode: soft-light;
 }
 
-.royal-hokm-table > * {
+.royal-hokm-table .table-seat-top,
+.royal-hokm-table .table-seat-bottom,
+.royal-hokm-table .table-middle-row {
   position: relative;
-  z-index: 2;
+  z-index: 15;
 }
 
 .table-watermark {
