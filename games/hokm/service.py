@@ -324,6 +324,9 @@ class HokmService:
                     if room.engine.state.stage != HokmStage.WAITING:
                         room.engine.players[idx].is_connected = True
                         room.engine.players[idx].disconnect_time = None
+                    else:
+                        slot["is_connected"] = True
+                    self._persist_room(room)
                     return True, "بازگشت به بازی.", room
 
             # If match already started: allow spectator or reject
@@ -408,6 +411,8 @@ class HokmService:
             return False, "فقط سازنده اتاق می‌تواند بازی را آغاز کند."
 
         async with room.lock:
+            if room.engine.state.stage != HokmStage.WAITING:
+                return False, "این اتاق قبلاً شروع شده یا دیگر در وضعیت انتظار نیست."
             if any(slot is None for slot in room.seat_slots):
                 return False, "همه جایگاه‌ها باید پر شوند."
 
@@ -431,6 +436,8 @@ class HokmService:
         if not room:
             return
         async with room.lock:
+            if room.engine.state.stage != HokmStage.CEREMONY:
+                return
             room.engine.start_new_hand()
             room.seq += 1
             self._persist_room(room)
@@ -530,9 +537,11 @@ class HokmService:
     async def _delay_and_start_next_hand(self, room_id: str) -> None:
         await asyncio.sleep(3.5)
         room = self.rooms.get(room_id)
-        if not room or room.engine.state.stage == HokmStage.MATCH_ENDED:
+        if not room:
             return
         async with room.lock:
+            if room.engine.state.stage != HokmStage.HAND_ENDED:
+                return
             room.engine.start_new_hand()
             room.seq += 1
             self._persist_room(room)
@@ -674,6 +683,7 @@ class HokmService:
         public_state = room.engine.get_public_state()
         public_state["invite_code"] = room.invite_code
         public_state["room_id"] = room.room_id
+        public_state["seq"] = room.seq
 
         # If in waiting stage before game starts, populate players from seat_slots
         if room.engine.state.stage == HokmStage.WAITING:
@@ -783,17 +793,19 @@ class HokmService:
 
             if stage == HokmStage.TRUMP_SELECTION:
                 # Default to Spades if Hakem times out
-                engine.choose_trump(cur_seat, "S")
-                room.seq += 1
-                await self._broadcast_room_state(room)
+                if engine.choose_trump(cur_seat, "S"):
+                    room.seq += 1
+                    self._persist_room(room)
+                    await self._broadcast_room_state(room)
                 await self._check_ai_turn(room)
 
             elif stage == HokmStage.TWO_PLAYER_DRAFT:
                 e2: TwoPlayerHokmEngine = engine  # type: ignore
                 if e2.state.draft_offered_cards:
-                    e2.select_draft_card(cur_seat, e2.state.draft_offered_cards[0])
-                    room.seq += 1
-                    await self._broadcast_room_state(room)
+                    if e2.select_draft_card(cur_seat, e2.state.draft_offered_cards[0]):
+                        room.seq += 1
+                        self._persist_room(room)
+                        await self._broadcast_room_state(room)
                     await self._check_ai_turn(room)
 
             elif stage == HokmStage.PLAYING:
