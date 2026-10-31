@@ -5,6 +5,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pytest
 from games.hokm.ai.strategy import choose_card_easy, choose_card_hard, choose_card_medium, choose_draft_card_ai, choose_trump_ai
+from games.hokm.service import HokmService
+from realtime.manager import ConnectionManager
 from games.hokm.four_player.engine import FourPlayerHokmEngine
 from games.hokm.shared.cards import Card, Rank, Suit
 from games.hokm.shared.deck import create_3p_51_deck, create_standard_52_deck
@@ -151,6 +153,126 @@ def test_two_player_draft_and_hand_size():
     assert len(engine.state.stock_cards) == 10
     assert len(engine.state.discard_cards) == 16
     assert engine.state.stage == HokmStage.PLAYING
+
+
+def _play_engine_to_hand_end(engine, max_moves: int = 120):
+    moves = 0
+    while engine.state.stage == HokmStage.PLAYING:
+        seat = engine.state.current_turn_seat
+        assert seat is not None
+        legal = engine.get_private_state(seat)["legal_moves"]
+        assert legal
+        success, error, _played, _trick, _summary = engine.play_card(seat, legal[0])
+        assert success, error
+        moves += 1
+        assert moves <= max_moves
+    return moves
+
+
+def test_two_player_engine_complete_hand_and_trick_snapshot():
+    engine = TwoPlayerHokmEngine("room_2p_full")
+    engine.initialize_players([{"user_id": 11, "name": "A"}, {"user_id": 12, "name": "B"}])
+    engine.start_ceremony()
+    engine.start_new_hand()
+    assert engine.choose_trump(engine.state.hakem_seat, "H")
+
+    for _ in range(16):
+        seat = engine.state.current_turn_seat
+        offered = engine.get_private_state(seat)["draft_offered_cards"]
+        assert offered and len(offered) == 2
+        assert engine.select_draft_card(seat, offered[0])
+
+    assert engine.state.stage == HokmStage.PLAYING
+    assert all(len(player.cards) == 13 for player in engine.players)
+    moves = _play_engine_to_hand_end(engine, max_moves=26)
+    assert moves == 26
+    assert engine.state.stage in (HokmStage.HAND_ENDED, HokmStage.MATCH_ENDED)
+    assert engine.last_hand_summary is not None
+    assert max(player.tricks_won for player in engine.players) >= 7
+    public = engine.get_public_state()
+    assert len(public["last_completed_trick"]["cards"]) == 2
+    assert "cards" not in public["players"][0]
+
+
+def test_three_player_engine_complete_hand_and_draw_scoring():
+    engine = ThreePlayerHokmEngine("room_3p_full")
+    engine.initialize_players([{"user_id": i, "name": f"P{i}"} for i in range(3)])
+    engine.start_ceremony()
+    engine.start_new_hand()
+    assert engine.choose_trump(engine.state.hakem_seat, "S")
+    assert all(len(player.cards) == 17 for player in engine.players)
+
+    moves = _play_engine_to_hand_end(engine, max_moves=51)
+    assert moves == 51
+    assert engine.state.stage in (HokmStage.HAND_ENDED, HokmStage.MATCH_ENDED)
+    assert engine.last_hand_summary is not None
+    total_tricks = sum(player.tricks_won for player in engine.players)
+    assert total_tricks == 17
+    public = engine.get_public_state()
+    assert len(public["last_completed_trick"]["cards"]) == 3
+    assert all("cards" not in player for player in public["players"])
+
+
+@pytest.mark.anyio
+async def test_hokm_private_snapshot_recovers_waiting_and_dealt_hands(tmp_path):
+    db_file = str(tmp_path / "hokm_recovery.db")
+    repo = GameRepository(db_file)
+    service = HokmService(repo, ConnectionManager())
+
+    room = await service.create_room(501, "Host", "hokm_4p")
+    ok, _message, joined = await service.join_room(502, "Guest", room.invite_code)
+    assert ok and joined is room
+    assert await service.add_ai_player(room.room_id, 501, "easy") == (True, "ربات اضافه شد.")
+    assert await service.add_ai_player(room.room_id, 501, "medium") == (True, "ربات اضافه شد.")
+
+    room.engine.initialize_players(room.seat_slots)
+    room.engine.start_ceremony()
+    room.engine.start_new_hand()
+    room.seq += 1
+    service._persist_room(room)
+
+    recovered_service = HokmService(GameRepository(db_file), ConnectionManager())
+    assert await recovered_service.recover_from_db() == 1
+    recovered = recovered_service.rooms[room.room_id]
+    assert recovered.engine.state.stage == HokmStage.TRUMP_SELECTION
+    assert len(recovered.engine.players) == 4
+    assert all(len(player.cards) == 5 for player in recovered.engine.players)
+    assert recovered.engine.players[2].is_ai is True
+    assert recovered.engine.players[3].is_ai is True
+    assert recovered.engine.get_private_state(0)["cards"] == recovered.engine.players[0].cards
+    assert "stock_cards" not in recovered.engine.get_public_state()
+
+
+@pytest.mark.anyio
+async def test_hokm_waiting_room_leave_and_unanimous_rematch(tmp_path):
+    db_file = str(tmp_path / "hokm_room_lifecycle.db")
+    repo = GameRepository(db_file)
+    service = HokmService(repo, ConnectionManager())
+
+    waiting = await service.create_room(601, "Host", "hokm_2p")
+    ok, _message, room = await service.join_room(602, "Guest", waiting.invite_code)
+    assert ok and room is waiting
+    leave_ok, _ = await service.leave_room(room.room_id, 602)
+    assert leave_ok is True
+    assert room.seat_slots[1] is None
+
+    # Rejoin and put the room into a completed-match state.
+    ok, _message, room = await service.join_room(602, "Guest", waiting.invite_code)
+    assert ok
+    room.engine.initialize_players(room.seat_slots)
+    room.engine.state.stage = HokmStage.MATCH_ENDED
+    room.engine.state.match_winner_seat = 0
+    service._persist_room(room)
+
+    first_vote, first_message, new_room = await service.request_rematch(room.room_id, 601)
+    assert first_vote is False and new_room is None
+    assert "1/2" in first_message
+
+    second_vote, _message, new_room = await service.request_rematch(room.room_id, 602)
+    assert second_vote is True and new_room is not None
+    assert new_room.room_id != room.room_id
+    assert new_room.engine.state.stage == HokmStage.CEREMONY
+    assert [player.user_id for player in new_room.engine.players] == [601, 602]
 
 
 def test_ai_strategies():
