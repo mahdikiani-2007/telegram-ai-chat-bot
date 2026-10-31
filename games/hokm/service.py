@@ -1,4 +1,6 @@
 import asyncio
+from dataclasses import asdict
+from enum import Enum
 import json
 import logging
 import secrets
@@ -10,7 +12,9 @@ from games.core.room import PlayerInfo
 from games.hokm.ai.strategy import choose_draft_card_ai, choose_trump_ai, get_ai_action_decision
 from games.hokm.four_player.engine import FourPlayerHokmEngine
 from games.hokm.shared.cards import Card
-from games.hokm.shared.models import GameMode, HokmStage, PlayerSeat
+from games.hokm.shared.models import (
+    GameMode, HandSummary, HokmGameState, HokmStage, PlayedCard, PlayerSeat, Trick,
+)
 from games.hokm.three_player.engine import ThreePlayerHokmEngine
 from games.hokm.two_player.engine import TwoPlayerHokmEngine
 from realtime.manager import ConnectionManager
@@ -46,6 +50,7 @@ class HokmRoom:
         self.created_at = time.time()
         self.updated_at = time.time()
         self.spectators: set[int] = set()
+        self.ai_task_generation = 0
 
         # Instantiate engine
         if game_mode == GameMode.TWO_PLAYER:
@@ -68,6 +73,185 @@ class HokmService:
         self.rooms: Dict[str, HokmRoom] = {}
         self.code_to_room: Dict[str, str] = {}
         self._user_to_room: Dict[int, str] = {}
+
+    @staticmethod
+    def _json_default(value: Any) -> Any:
+        if isinstance(value, Enum):
+            return value.value
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+    def _snapshot_room(self, room: HokmRoom) -> Dict[str, Any]:
+        """Build a private, versioned snapshot for durable server-side recovery."""
+        return {
+            "schema_version": 1,
+            "room": {
+                "room_id": room.room_id,
+                "game_mode": room.game_mode.value,
+                "host_id": room.host_id,
+                "invite_code": room.invite_code,
+                "turn_time_limit": room.turn_time_limit,
+                "is_ranked": room.is_ranked,
+                "allow_spectators": room.allow_spectators,
+                "seq": room.seq,
+                "created_at": room.created_at,
+                "updated_at": room.updated_at,
+                "seat_slots": room.seat_slots,
+                "spectators": sorted(room.spectators),
+            },
+            "engine": {
+                "state": asdict(room.engine.state),
+                "players": [asdict(player) for player in room.engine.players],
+                "last_hand_summary": (
+                    asdict(room.engine.last_hand_summary)
+                    if room.engine.last_hand_summary is not None
+                    else None
+                ),
+            },
+        }
+
+    def _persist_room(self, room: HokmRoom) -> None:
+        """Persist complete engine state and seat metadata after each transition."""
+        stage = room.engine.state.stage
+        status = (
+            "waiting" if stage == HokmStage.WAITING
+            else "completed" if stage == HokmStage.MATCH_ENDED
+            else "active"
+        )
+        snapshot = self._snapshot_room(room)
+        result = None
+        if status == "completed":
+            result = (
+                f"winner_team:{room.engine.state.match_winner_team}"
+                if room.engine.state.match_winner_team is not None
+                else f"winner_seat:{room.engine.state.match_winner_seat}"
+            )
+
+        self.repo.update_hokm_room_state(
+            room_id=room.room_id,
+            state_json=json.dumps(
+                snapshot,
+                ensure_ascii=False,
+                default=self._json_default,
+            ),
+            seq=room.seq,
+            status=status,
+            result=result,
+        )
+
+        source_players = (
+            [
+                {
+                    "seat": index,
+                    **slot,
+                    "is_connected": True,
+                }
+                for index, slot in enumerate(room.seat_slots)
+                if slot is not None
+            ]
+            if not room.engine.players
+            else [asdict(player) for player in room.engine.players]
+        )
+        self.repo.replace_hokm_room_players(room.room_id, source_players)
+
+    async def recover_from_db(self) -> int:
+        """Restore waiting and active Hokm rooms, including private player hands."""
+        restored = 0
+        for row in self.repo.get_active_hokm_rooms():
+            try:
+                data = json.loads(row.get("state_json") or "{}")
+                if data.get("schema_version") != 1:
+                    log.warning(
+                        "Skipping legacy Hokm room %s: no recoverable private snapshot",
+                        row.get("id"),
+                    )
+                    continue
+
+                metadata = data["room"]
+                saved_engine = data["engine"]
+                mode = GameMode(metadata["game_mode"])
+                room = HokmRoom(
+                    room_id=metadata["room_id"],
+                    game_mode=mode,
+                    host_id=int(metadata["host_id"]),
+                    invite_code=metadata["invite_code"],
+                    turn_time_limit=int(metadata["turn_time_limit"]),
+                    is_ranked=bool(metadata["is_ranked"]),
+                    allow_spectators=bool(metadata["allow_spectators"]),
+                )
+                room.seq = int(metadata.get("seq", row.get("current_seq") or 0))
+                room.created_at = float(metadata.get("created_at", row.get("created_at") or time.time()))
+                room.updated_at = float(metadata.get("updated_at", row.get("updated_at") or time.time()))
+                room.seat_slots = metadata.get("seat_slots") or [None] * mode.player_count
+                room.spectators = set(metadata.get("spectators") or [])
+
+                state_data = dict(saved_engine["state"])
+                state_data["game_mode"] = GameMode(state_data["game_mode"])
+                state_data["stage"] = HokmStage(state_data["stage"])
+                state_data["current_trick"] = [
+                    PlayedCard(**played) for played in state_data.get("current_trick", [])
+                ]
+                state_data["completed_tricks"] = [
+                    Trick(
+                        lead_seat=trick["lead_seat"],
+                        lead_card=trick["lead_card"],
+                        cards=[PlayedCard(**played) for played in trick.get("cards", [])],
+                        winner_seat=trick.get("winner_seat"),
+                        winner_id=trick.get("winner_id"),
+                    )
+                    for trick in state_data.get("completed_tricks", [])
+                ]
+                state_data["ceremony_cards"] = {
+                    int(seat): card for seat, card in state_data.get("ceremony_cards", {}).items()
+                }
+                room.engine.state = HokmGameState(**state_data)
+                room.engine.players = [
+                    PlayerSeat(**player) for player in saved_engine.get("players", [])
+                ]
+
+                summary = saved_engine.get("last_hand_summary")
+                if summary:
+                    summary = dict(summary)
+                    summary["tricks_by_seat"] = {
+                        int(seat): count for seat, count in summary.get("tricks_by_seat", {}).items()
+                    }
+                    room.engine.last_hand_summary = HandSummary(**summary)
+
+                self.rooms[room.room_id] = room
+                if room.invite_code:
+                    self.code_to_room[room.invite_code] = room.room_id
+                for slot in room.seat_slots:
+                    if slot and not slot.get("is_ai"):
+                        self._user_to_room[int(slot["user_id"])] = room.room_id
+                for player in room.engine.players:
+                    if not player.is_ai:
+                        self._user_to_room[player.user_id] = room.room_id
+                for spectator_id in room.spectators:
+                    self._user_to_room[spectator_id] = room.room_id
+                restored += 1
+            except Exception:
+                log.error("Failed to recover Hokm room %s", row.get("id"), exc_info=True)
+
+        log.info("Recovered %d Hokm room(s) from SQLite", restored)
+        return restored
+
+    async def leave_room(self, room_id: str, user_id: int) -> Tuple[bool, str]:
+        """Leave a waiting/finished room or stop spectating; active players cannot silently exit."""
+        room = self.rooms.get(room_id)
+        if room is None:
+            return False, "اتاق پیدا نشد."
+
+        async with room.lock:
+            if room.engine.state.stage not in (HokmStage.WAITING, HokmStage.MATCH_ENDED):
+                seat = next(
+                    (player.seat for player in room.engine.players if player.user_id == user_id),
+                    None,
+                )
+                if seat is not None:
+                    return False, "برای خروج از بازی فعال ابتدا باید بازی را تمام کنید."
+            room.spectators.discard(user_id)
+            self._user_to_room.pop(user_id, None)
+            await self.manager.leave_room(user_id, room_id)
+            return True, "از اتاق خارج شدید."
 
     def _generate_code(self) -> str:
         chars = string.ascii_uppercase + string.digits
