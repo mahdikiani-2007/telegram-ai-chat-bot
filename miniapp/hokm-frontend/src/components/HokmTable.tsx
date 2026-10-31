@@ -136,7 +136,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
 
   useEffect(() => {
     if (!turnDeadline && !trickResolutionUntil) return;
-    const interval = window.setInterval(() => setNow(Date.now() / 1000), 100);
+    const interval = window.setInterval(() => setNow(Date.now() / 1000), 250);
     return () => window.clearInterval(interval);
   }, [turnDeadline, trickResolutionUntil]);
 
@@ -339,7 +339,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
 
   const renderCapturePile = (team: number, count: number, label: string, position: 'top' | 'bottom') => (
     <div
-      className={'team-capture-pile ' + position + ' ' + (team === myTeam ? 'own-team' : 'rival-team') +
+      className={'team-capture-pile ' + position + ' ' + (team === viewerTeam ? 'own-team' : 'rival-team') +
         (team === viewerTeam ? ' pile-own' : ' pile-rival') +
         (resolvedTrick.length && resolvingWinnerTeam === team ? ' pile-receiving' : '')}
       aria-label={label + ': ' + count + ' دست جمع‌شده'}
