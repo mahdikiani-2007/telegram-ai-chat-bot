@@ -241,6 +241,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
                   key={code}
                   code={code}
                   isPlayable={isPlayable}
+                  isDisabled={!isPlayable}
                   isSelected={selectedCard === code}
                   onClick={() => handleCardClick(code)}
                 />
