@@ -767,15 +767,22 @@ class GameRepository:
             )
             conn.commit()
 
-    def get_active_hokm_rooms(self) -> List[Dict[str, Any]]:
+    def get_active_hokm_rooms(self, completed_since: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Return live rooms plus recently completed matches that still allow rematch."""
         conn = self._connect()
+        cutoff = completed_since if completed_since is not None else time.time() - 86400
         cur = conn.execute(
             """
-            SELECT id, game_type, status, player1_id, state_json, current_seq, invite_code, created_at
+            SELECT *
             FROM game_rooms
-            WHERE game_type LIKE 'hokm%' AND status IN ('waiting', 'active')
+            WHERE game_type LIKE 'hokm%'
+              AND (
+                  status IN ('waiting', 'active')
+                  OR (status = 'completed' AND updated_at >= ?)
+              )
             ORDER BY created_at DESC
-            """
+            """,
+            (cutoff,),
         )
         return [dict(r) for r in cur.fetchall()]
 
