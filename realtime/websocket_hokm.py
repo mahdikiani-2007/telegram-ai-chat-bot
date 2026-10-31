@@ -38,14 +38,20 @@ async def handle_hokm_websocket(
         if current_room_id and current_room_id in hokm_service.rooms:
             room = hokm_service.rooms[current_room_id]
             await manager.join_room(user_id, current_room_id)
-            # Mark reconnected
-            for p in room.engine.players:
-                if p.user_id == user_id:
-                    p.is_connected = True
-                    p.disconnect_time = None
-                    break
-            # Send current state
-            await hokm_service._broadcast_room_state(room)
+            async with room.lock:
+                # Restore both active-player and waiting-seat presence.
+                for player in room.engine.players:
+                    if player.user_id == user_id:
+                        player.is_connected = True
+                        player.disconnect_time = None
+                        break
+                else:
+                    for slot in room.seat_slots:
+                        if slot and slot.get("user_id") == user_id:
+                            slot["is_connected"] = True
+                            break
+                hokm_service._persist_room(room)
+                await hokm_service._broadcast_room_state(room)
     except Exception:
         log.error("Hokm reconnection sync error for user %d", user_id, exc_info=True)
 
@@ -216,7 +222,18 @@ async def handle_hokm_websocket(
             elif msg_type == "hokm.chat.message":
                 room_id = payload.get("room_id")
                 text = str(payload.get("text", "")).strip()[:150]
-                if text and room_id:
+                room = hokm_service.rooms.get(room_id) if room_id else None
+                is_member = bool(
+                    room and (
+                        user_id in room.spectators
+                        or any(
+                            slot and slot.get("user_id") == user_id
+                            for slot in room.seat_slots
+                        )
+                        or any(player.user_id == user_id for player in room.engine.players)
+                    )
+                )
+                if text and is_member:
                     await manager.broadcast_to_room(
                         room_id,
                         {
@@ -226,11 +243,24 @@ async def handle_hokm_websocket(
                             "text": text,
                         },
                     )
+                elif text:
+                    await ws.send_json({"type": "error", "error": "اجازه ارسال پیام در این اتاق را ندارید."})
 
             elif msg_type == "hokm.chat.reaction":
                 room_id = payload.get("room_id")
                 reaction = str(payload.get("reaction", "")).strip()[:10]
-                if reaction and room_id:
+                room = hokm_service.rooms.get(room_id) if room_id else None
+                is_member = bool(
+                    room and (
+                        user_id in room.spectators
+                        or any(
+                            slot and slot.get("user_id") == user_id
+                            for slot in room.seat_slots
+                        )
+                        or any(player.user_id == user_id for player in room.engine.players)
+                    )
+                )
+                if reaction and is_member:
                     await manager.broadcast_to_room(
                         room_id,
                         {
@@ -240,6 +270,8 @@ async def handle_hokm_websocket(
                             "reaction": reaction,
                         },
                     )
+                elif reaction:
+                    await ws.send_json({"type": "error", "error": "اجازه ارسال واکنش در این اتاق را ندارید."})
 
             else:
                 await ws.send_json({"type": "error", "error": f"Unknown action: {msg_type}"})
