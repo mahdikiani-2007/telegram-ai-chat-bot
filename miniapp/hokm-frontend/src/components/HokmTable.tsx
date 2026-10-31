@@ -261,14 +261,14 @@ export const HokmTable: React.FC<HokmTableProps> = ({
     return relOffset === 0 ? 'translateY(32px)' : 'translateY(-32px)';
   };
 
+  const viewerTeam = myTeam === 1 ? 1 : 0;
+
   const getCollectVector = (seat: number): [number, number] => {
-    const relOffset = (seat - layoutSeat + totalSeats) % totalSeats;
     if (totalSeats === 4) {
-      if (relOffset === 0) return [0, 145];
-      if (relOffset === 1) return [165, 0];
-      if (relOffset === 2) return [0, -145];
-      return [-165, 0];
+      const winnerTeam = players.find((player) => player?.seat === seat)?.team;
+      return winnerTeam === viewerTeam ? [-145, 135] : [145, -135];
     }
+    const relOffset = (seat - layoutSeat + totalSeats) % totalSeats;
     return relOffset === 1 ? [95, -110] : relOffset === 2 ? [-95, -110] : [0, 130];
   };
 
@@ -332,14 +332,15 @@ export const HokmTable: React.FC<HokmTableProps> = ({
     );
   };
 
-  const ownTricks = myTeam === 1 ? displayedTeamBTricks : displayedTeamATricks;
-  const rivalTricks = myTeam === 1 ? displayedTeamATricks : displayedTeamBTricks;
+  const ownTricks = viewerTeam === 1 ? displayedTeamBTricks : displayedTeamATricks;
+  const rivalTricks = viewerTeam === 1 ? displayedTeamATricks : displayedTeamBTricks;
   const myLabel = myTeam === null || myTeam === undefined ? 'تیم الف' : 'تیم شما';
   const rivalLabel = myTeam === null || myTeam === undefined ? 'تیم ب' : 'حریف';
 
   const renderCapturePile = (team: number, count: number, label: string, position: 'top' | 'bottom') => (
     <div
       className={'team-capture-pile ' + position + ' ' + (team === myTeam ? 'own-team' : 'rival-team') +
+        (team === viewerTeam ? ' pile-own' : ' pile-rival') +
         (resolvedTrick.length && resolvingWinnerTeam === team ? ' pile-receiving' : '')}
       aria-label={label + ': ' + count + ' دست جمع‌شده'}
     >
@@ -401,10 +402,10 @@ export const HokmTable: React.FC<HokmTableProps> = ({
           )}
           <div className="score-banner royal-score-banner">{renderScore()}</div>
 
-          {isFourPlayer && (myTeam === 0 || myTeam === 1) && (
+          {isFourPlayer && (
             <>
-              {renderCapturePile(myTeam, ownTricks, myLabel, 'bottom')}
-              {renderCapturePile(myTeam === 0 ? 1 : 0, rivalTricks, rivalLabel, 'top')}
+              {renderCapturePile(viewerTeam, ownTricks, myLabel, 'bottom')}
+              {renderCapturePile(viewerTeam === 0 ? 1 : 0, rivalTricks, rivalLabel, 'top')}
             </>
           )}
 
