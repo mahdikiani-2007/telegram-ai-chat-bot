@@ -1,6 +1,8 @@
 import asyncio
 import json
 import logging
+import secrets
+import time
 from typing import Any, Dict, Optional
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -246,6 +248,9 @@ async def handle_hokm_websocket(
                         room_id,
                         {
                             "type": "hokm.chat.message",
+                            "room_id": room_id,
+                            "message_id": secrets.token_hex(8),
+                            "sent_at": time.time(),
                             "user_id": user_id,
                             "name": name,
                             "text": text,
@@ -273,6 +278,9 @@ async def handle_hokm_websocket(
                         room_id,
                         {
                             "type": "hokm.chat.reaction",
+                            "room_id": room_id,
+                            "message_id": secrets.token_hex(8),
+                            "sent_at": time.time(),
                             "user_id": user_id,
                             "name": name,
                             "reaction": reaction,
