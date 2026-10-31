@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from games.chess.ai import choose_move
 from games.chess.clock import ChessClock
 from games.chess.engine import ChessEngine
 from games.chess.models import (
@@ -25,6 +26,13 @@ from realtime.protocol import (
 from repositories.games import GameRepository
 
 log = logging.getLogger("L-bot")
+BOT_PLAYER_ID = -1
+BOT_DIFFICULTIES = {"easy", "medium", "hard"}
+BOT_DIFFICULTY_LABELS = {
+    "easy": "مبتدی",
+    "medium": "متوسط",
+    "hard": "حرفه‌ای",
+}
 
 
 @dataclass
@@ -49,6 +57,9 @@ class ChessRoom:
     last_move: Optional[str] = None
     result: Optional[str] = None
     end_reason: Optional[str] = None
+    is_bot_game: bool = False
+    bot_difficulty: Optional[str] = None
+    bot_id: Optional[int] = None
     turn_started_at: Optional[float] = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
@@ -75,6 +86,58 @@ class ChessService:
             for r in self._rooms.values()
             if r.status in ("waiting", "active") and (r.player1_id == user_id or r.player2_id == user_id)
         ]
+
+    async def _abandon_waiting_room(self, room: ChessRoom, player_id: int) -> bool:
+        """Cancel an unjoined private room owned by this player."""
+        async with room.lock:
+            if room.status != "waiting" or room.player1_id != player_id:
+                return False
+            room.status = "abandoned"
+            room.result = "abandoned"
+            room.end_reason = GameEndReason.ABANDONED.value
+            room.updated_at = time.time()
+            self.repo.set_room_result(
+                room.room_id,
+                f"abandoned:{GameEndReason.ABANDONED.value}",
+                status="abandoned",
+            )
+        await self.manager.leave_room(player_id, room.room_id)
+        return True
+
+    async def abandon_waiting_rooms(self, player_id: int) -> int:
+        """Release every unjoined invite room owned by a player.
+
+        Starting another game explicitly replaces any pending invite. Active
+        matches are never abandoned by this method.
+        """
+        waiting_rooms = [
+            room for room in list(self._rooms.values())
+            if room.player1_id == player_id and room.status == "waiting"
+        ]
+        abandoned = 0
+        for room in waiting_rooms:
+            if await self._abandon_waiting_room(room, player_id):
+                abandoned += 1
+        return abandoned
+
+    async def cancel_waiting_room(self, room_id: str, player_id: int) -> Dict[str, Any]:
+        room = self.get_room(room_id)
+        if room is None:
+            db_room = self.repo.get_room(room_id)
+            if not db_room:
+                return {"error": "room_not_found", "message": "اتاق پیدا نشد."}
+            await self._restore_room_from_dict(db_room)
+            room = self.get_room(room_id)
+
+        if room is None:
+            return {"error": "room_not_found", "message": "اتاق پیدا نشد."}
+        if room.player1_id != player_id:
+            return {"error": "unauthorized", "message": "فقط سازنده اتاق می‌تواند آن را لغو کند."}
+        if room.status != "waiting":
+            return {"error": "room_not_waiting", "message": "این اتاق دیگر در وضعیت انتظار نیست."}
+
+        cancelled = await self._abandon_waiting_room(room, player_id)
+        return {"ok": cancelled, "room_id": room_id}
 
     async def create_room(
         self,
@@ -125,6 +188,117 @@ class ChessService:
             "room_id": room_id,
             "invite_code": invite_code,
             "time_control": {"key": tc.key, "label": tc.label, "initial_ms": tc.initial_ms, "increment_ms": tc.increment_ms},
+        }
+
+    async def create_bot_game(
+        self,
+        creator_id: int,
+        creator_name: str,
+        difficulty: str = "medium",
+        time_control_key: str = "blitz_5_0",
+    ) -> Dict[str, Any]:
+        """Create a server-authoritative game with the human as White and AI as Black."""
+        if difficulty not in BOT_DIFFICULTIES:
+            return {"error": "invalid_difficulty", "message": "سطح دشواری ربات معتبر نیست."}
+
+        tc = TimeControl.from_key(time_control_key)
+        room_id = secrets.token_urlsafe(12)
+        now = time.time()
+        bot_name = f"ربات {BOT_DIFFICULTY_LABELS[difficulty]}"
+        clock = ChessClock(tc.initial_ms, tc.initial_ms, tc.increment_ms)
+        clock.start("white")
+        initial_engine = ChessEngine()
+
+        state_dict = {
+            "fen": initial_engine.get_fen(),
+            "turn": "white",
+            "status": "active",
+            "player1_name": creator_name,
+            "player2_name": bot_name,
+            "is_bot_game": True,
+            "bot_difficulty": difficulty,
+            "bot_id": BOT_PLAYER_ID,
+        }
+
+        room = ChessRoom(
+            room_id=room_id,
+            status="active",
+            player1_id=creator_id,
+            player1_name=creator_name,
+            player2_id=BOT_PLAYER_ID,
+            player2_name=bot_name,
+            white_id=creator_id,
+            black_id=BOT_PLAYER_ID,
+            engine=initial_engine,
+            clock=clock,
+            time_control_key=tc.key,
+            time_control=tc,
+            invite_code="",
+            is_bot_game=True,
+            bot_difficulty=difficulty,
+            bot_id=BOT_PLAYER_ID,
+            turn_started_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+
+        async with self._global_lock:
+            active = [
+                existing for existing in self._rooms.values()
+                if existing.status == "active"
+                and creator_id in (existing.player1_id, existing.player2_id)
+            ]
+            if active:
+                return {
+                    "error": "already_in_game",
+                    "room_id": active[0].room_id,
+                    "message": "شما یک بازی فعال دارید؛ ابتدا آن را ادامه دهید یا تمام کنید.",
+                }
+
+            self.repo.create_room(
+                room_id=room_id,
+                player1_id=creator_id,
+                initial_time_ms=tc.initial_ms,
+                increment_ms=tc.increment_ms,
+                invite_code=f"bot_{room_id}",
+                state_json=json.dumps(state_dict, ensure_ascii=False),
+                expires_at=None,
+            )
+            self.repo.join_room(
+                room_id=room_id,
+                player2_id=BOT_PLAYER_ID,
+                white_player_id=creator_id,
+                black_player_id=BOT_PLAYER_ID,
+                status="active",
+                state_json=json.dumps(state_dict, ensure_ascii=False),
+                turn_started_at=now,
+            )
+            self._rooms[room_id] = room
+
+        await self.manager.join_room(creator_id, room_id)
+
+        start_message = make_game_start(
+            game_id=room_id,
+            white_info={"user_id": creator_id, "name": creator_name},
+            black_info={"user_id": BOT_PLAYER_ID, "name": bot_name},
+            fen=room.engine.get_fen(),
+            time_control={
+                "key": tc.key,
+                "label": tc.label,
+                "initial_ms": tc.initial_ms,
+                "increment_ms": tc.increment_ms,
+            },
+            seq=0,
+        )
+        start_message["payload"]["is_bot_game"] = True
+        start_message["payload"]["bot_difficulty"] = difficulty
+
+        return {
+            "room_id": room_id,
+            "status": "active",
+            "is_bot_game": True,
+            "bot_difficulty": difficulty,
+            "start_message": start_message,
         }
 
     async def join_room(self, room_id: str, player_id: int, player_name: str) -> Dict[str, Any]:
@@ -231,6 +405,65 @@ class ChessService:
 
         return await self.join_room(target_room_id, player_id, player_name)
 
+    def _record_result_stats(self, room: ChessRoom, result: GameResult) -> None:
+        """Record human stats without creating synthetic AI player accounts."""
+        if room.is_bot_game:
+            if result == GameResult.WHITE_WINS:
+                self.repo.update_stats(room.player1_id, "chess", "win")
+            elif result == GameResult.BLACK_WINS:
+                self.repo.update_stats(room.player1_id, "chess", "loss")
+            else:
+                self.repo.update_stats(room.player1_id, "chess", "draw")
+            return
+
+        if result == GameResult.WHITE_WINS:
+            if room.white_id is not None:
+                self.repo.update_stats(room.white_id, "chess", "win")
+            if room.black_id is not None:
+                self.repo.update_stats(room.black_id, "chess", "loss")
+        elif result == GameResult.BLACK_WINS:
+            if room.black_id is not None:
+                self.repo.update_stats(room.black_id, "chess", "win")
+            if room.white_id is not None:
+                self.repo.update_stats(room.white_id, "chess", "loss")
+        else:
+            if room.white_id is not None:
+                self.repo.update_stats(room.white_id, "chess", "draw")
+            if room.black_id is not None:
+                self.repo.update_stats(room.black_id, "chess", "draw")
+
+    async def make_bot_move(self, room_id: str) -> Dict[str, Any]:
+        """Compute and persist the AI reply for a bot-controlled room."""
+        room = self.get_room(room_id)
+        if room is None:
+            return {"error": "room_not_found", "message": "اتاق پیدا نشد."}
+
+        async with room.lock:
+            if not room.is_bot_game or room.bot_id is None:
+                return {"error": "not_bot_game", "message": "این بازی با ربات نیست."}
+            if room.status != "active":
+                return {"error": "game_not_active", "message": "بازی فعال نیست."}
+            expected_id = room.white_id if room.engine.get_turn() == "white" else room.black_id
+            if expected_id != room.bot_id:
+                return {"error": "not_bot_turn", "message": "هنوز نوبت ربات نیست."}
+            fen = room.engine.get_fen()
+            difficulty = room.bot_difficulty or "medium"
+            expected_seq = room.current_seq
+            bot_id = room.bot_id
+
+        try:
+            uci = await asyncio.to_thread(choose_move, fen, difficulty)
+        except ValueError as exc:
+            return {"error": "no_legal_moves", "message": str(exc)}
+
+        return await self.make_move(
+            room_id=room_id,
+            player_id=bot_id,
+            uci=uci,
+            move_id=f"bot_{secrets.token_urlsafe(12)}",
+            expected_seq=expected_seq,
+        )
+
     async def make_move(
         self,
         room_id: str,
@@ -303,16 +536,10 @@ class ChessService:
                 winner_id = None
                 if res == GameResult.WHITE_WINS:
                     winner_id = room.white_id
-                    self.repo.update_stats(room.white_id, "chess", "win")
-                    self.repo.update_stats(room.black_id, "chess", "loss")
                 elif res == GameResult.BLACK_WINS:
                     winner_id = room.black_id
-                    self.repo.update_stats(room.black_id, "chess", "win")
-                    self.repo.update_stats(room.white_id, "chess", "loss")
-                else:
-                    self.repo.update_stats(room.white_id, "chess", "draw")
-                    self.repo.update_stats(room.black_id, "chess", "draw")
 
+                self._record_result_stats(room, res)
                 self.repo.set_room_result(room.room_id, f"{res.value}:{reason.value}")
                 finished_message = make_game_finished(
                     game_id=room_id,
@@ -361,6 +588,11 @@ class ChessService:
                 "check": room.engine.is_check(),
                 "last_move": uci,
                 "status": room.status,
+                "player1_name": room.player1_name,
+                "player2_name": room.player2_name,
+                "is_bot_game": room.is_bot_game,
+                "bot_difficulty": room.bot_difficulty,
+                "bot_id": room.bot_id,
             }
             self.repo.update_room_state(
                 room_id=room_id,
@@ -421,10 +653,12 @@ class ChessService:
             room.current_seq += 1
             room.updated_at = time.time()
 
-            # Record stats
-            if winner_id:
-                self.repo.update_stats(winner_id, "chess", "win")
-            self.repo.update_stats(player_id, "chess", "loss")
+            if room.is_bot_game:
+                self._record_result_stats(room, res)
+            else:
+                if winner_id is not None:
+                    self.repo.update_stats(winner_id, "chess", "win")
+                self.repo.update_stats(player_id, "chess", "loss")
 
             self.repo.set_room_result(room_id, f"{res.value}:resignation")
 
@@ -460,6 +694,8 @@ class ChessService:
         room = self.get_room(room_id)
         if not room or room.status != "active":
             return {"error": "game_not_active", "message": "بازی فعال نیست."}
+        if room.is_bot_game:
+            return {"error": "draw_unavailable", "message": "در بازی با ربات امکان پیشنهاد تساوی وجود ندارد."}
 
         async with room.lock:
             if player_id not in (room.white_id, room.black_id):
@@ -489,10 +725,7 @@ class ChessService:
             room.current_seq += 1
             room.updated_at = time.time()
 
-            if room.white_id and room.black_id:
-                self.repo.update_stats(room.white_id, "chess", "draw")
-                self.repo.update_stats(room.black_id, "chess", "draw")
-
+            self._record_result_stats(room, GameResult.DRAW)
             self.repo.set_room_result(room_id, "draw:draw_agreement")
 
             w_ms, b_ms = room.clock.get_remaining() if room.clock else (0, 0)
@@ -576,6 +809,8 @@ class ChessService:
                     "result": room.result,
                     "end_reason": room.end_reason,
                     "draw_offered_by": room.draw_offered_by,
+                    "is_bot_game": room.is_bot_game,
+                    "bot_difficulty": room.bot_difficulty,
                 },
             )
 
@@ -628,17 +863,7 @@ class ChessService:
         room.current_seq += 1
         room.updated_at = time.time()
 
-        # Update stats
-        if res == GameResult.DRAW:
-            if room.white_id and room.black_id:
-                self.repo.update_stats(room.white_id, "chess", "draw")
-                self.repo.update_stats(room.black_id, "chess", "draw")
-        elif winner_id:
-            loser_id = room.black_id if winner_id == room.white_id else room.white_id
-            self.repo.update_stats(winner_id, "chess", "win")
-            if loser_id:
-                self.repo.update_stats(loser_id, "chess", "loss")
-
+        self._record_result_stats(room, res)
         self.repo.set_room_result(room.room_id, f"{res.value}:timeout")
 
         w_ms, b_ms = room.clock.get_remaining() if room.clock else (0, 0)
@@ -731,15 +956,30 @@ class ChessService:
                 turn_started_at=r.get("turn_started_at"),
             )
 
+        try:
+            saved_state = json.loads(r.get("state_json") or "{}")
+        except (TypeError, ValueError):
+            saved_state = {}
+        is_bot_game = bool(saved_state.get("is_bot_game"))
+        bot_difficulty = saved_state.get("bot_difficulty") if is_bot_game else None
+        bot_id = int(saved_state.get("bot_id", BOT_PLAYER_ID)) if is_bot_game else None
+        player1_name = saved_state.get("player1_name") or f"Player {r['player1_id']}"
+        player2_name = saved_state.get("player2_name") or (
+            f"Player {r.get('player2_id')}" if r.get("player2_id") is not None else None
+        )
+
         room = ChessRoom(
             room_id=room_id,
             status=r["status"],
             player1_id=r["player1_id"],
-            player1_name=f"Player {r['player1_id']}",
+            player1_name=player1_name,
             player2_id=r.get("player2_id"),
-            player2_name=f"Player {r.get('player2_id')}" if r.get("player2_id") else None,
+            player2_name=player2_name,
             white_id=r.get("white_player_id"),
             black_id=r.get("black_player_id"),
+            is_bot_game=is_bot_game,
+            bot_difficulty=bot_difficulty,
+            bot_id=bot_id,
             engine=engine,
             clock=clock,
             time_control=tc,
