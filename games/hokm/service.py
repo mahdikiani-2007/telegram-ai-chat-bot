@@ -293,10 +293,12 @@ class HokmService:
             if slot_index is not None and stage == HokmStage.WAITING:
                 room.seat_slots[slot_index] = None
             room.spectators.discard(user_id)
+            room.rematch_votes.discard(user_id)
             self._user_to_room.pop(user_id, None)
             await self.manager.leave_room(user_id, room_id)
 
-            if stage == HokmStage.WAITING:
+            if stage in (HokmStage.WAITING, HokmStage.MATCH_ENDED):
+                room.seq += 1
                 self._persist_room(room)
                 await self._broadcast_room_state(room)
             return True, "از اتاق خارج شدید."
