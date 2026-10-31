@@ -56,6 +56,7 @@ class HokmRoom:
         self.rematch_votes: set[int] = set()
         self.rematch_room_id: Optional[str] = None
         self.ai_task_generation = 0
+        self.trick_resolution_until = 0.0
 
         # Instantiate engine
         if game_mode == GameMode.TWO_PLAYER:
@@ -707,6 +708,8 @@ class HokmService:
             return False, "اتاق پیدا نشد."
 
         async with room.lock:
+            if time.time() < room.trick_resolution_until:
+                return False, "کارت‌ها هنوز در حال جمع‌شدن هستند."
             cur_seat = room.engine.state.current_turn_seat
             if cur_seat is None or room.engine.players[cur_seat].user_id != user_id:
                 return False, "نوبت شما نیست."
@@ -716,8 +719,9 @@ class HokmService:
                 return False, error or "حرکت نامعتبر."
 
             room.seq += 1
+            if completed_trick:
+                room.trick_resolution_until = time.time() + 2.65
 
-            # Check if match ended
             if room.engine.state.stage == HokmStage.MATCH_ENDED:
                 await self._finalize_match(room)
             else:
@@ -725,16 +729,12 @@ class HokmService:
 
             await self._broadcast_room_state(room)
 
-            # If hand ended, wait 3 seconds to show summary then start next hand
             if hand_summary and room.engine.state.stage == HokmStage.HAND_ENDED:
                 asyncio.create_task(self._delay_and_start_next_hand(room_id))
+            elif completed_trick:
+                asyncio.create_task(self._delay_and_check_ai(room_id, 2.7))
             else:
-                # If trick completed or next turn is AI, check AI
-                if completed_trick:
-                    # Brief pause so players see the 4th/3rd card land before next lead
-                    asyncio.create_task(self._delay_and_check_ai(room_id, 0.8))
-                else:
-                    await self._check_ai_turn(room)
+                await self._check_ai_turn(room)
 
             return True, "کارت با موفقیت بازی شد."
 
@@ -746,13 +746,14 @@ class HokmService:
                 await self._check_ai_turn(room)
 
     async def _delay_and_start_next_hand(self, room_id: str) -> None:
-        await asyncio.sleep(3.5)
+        await asyncio.sleep(6.4)
         room = self.rooms.get(room_id)
         if not room:
             return
         async with room.lock:
             if room.engine.state.stage != HokmStage.HAND_ENDED:
                 return
+            room.trick_resolution_until = 0.0
             room.engine.start_new_hand()
             room.seq += 1
             self._persist_room(room)
@@ -763,6 +764,8 @@ class HokmService:
         """Executes AI actions asynchronously if the current turn belongs to an AI player."""
         engine = room.engine
         stage = engine.state.stage
+        if time.time() < room.trick_resolution_until:
+            return
 
         if stage == HokmStage.TRUMP_SELECTION:
             hakem_seat = engine.state.hakem_seat
@@ -810,6 +813,8 @@ class HokmService:
                     success, error, played, completed_trick, hand_summary = engine.play_card(cur_seat, chosen_card)
                     if success:
                         room.seq += 1
+                        if completed_trick:
+                            room.trick_resolution_until = time.time() + 2.65
                         if engine.state.stage == HokmStage.MATCH_ENDED:
                             await self._finalize_match(room)
                         else:
@@ -819,7 +824,7 @@ class HokmService:
                         if hand_summary and engine.state.stage == HokmStage.HAND_ENDED:
                             asyncio.create_task(self._delay_and_start_next_hand(room.room_id))
                         elif completed_trick:
-                            asyncio.create_task(self._delay_and_check_ai(room.room_id, 0.7))
+                            asyncio.create_task(self._delay_and_check_ai(room.room_id, 2.7))
                         else:
                             await self._check_ai_turn(room)
 
@@ -895,6 +900,7 @@ class HokmService:
         public_state["invite_code"] = room.invite_code
         public_state["room_id"] = room.room_id
         public_state["seq"] = room.seq
+        public_state["trick_resolution_until"] = room.trick_resolution_until
         connected_humans = {
             player.user_id
             for player in room.engine.players
@@ -1054,6 +1060,8 @@ class HokmService:
         for room in list(self.rooms.values()):
             if room.engine.state.stage in (HokmStage.WAITING, HokmStage.MATCH_ENDED):
                 continue
+            if now < room.trick_resolution_until:
+                continue
 
             await self._replace_expired_disconnected_players(room, now)
 
@@ -1087,6 +1095,8 @@ class HokmService:
             stage = engine.state.stage
             cur_seat = engine.state.current_turn_seat
             deadline = engine.state.action_deadline
+            if time.time() < room.trick_resolution_until:
+                return
             if deadline is None or time.time() < deadline:
                 return
 
