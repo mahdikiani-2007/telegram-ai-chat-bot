@@ -125,6 +125,8 @@ export const HokmTable: React.FC<HokmTableProps> = ({
     lastCompletedKeyRef.current = key;
     setResolvedTrick(lastCompleted.cards);
     setResolvingWinner(lastCompleted.winner_seat ?? null);
+    sounds.playTrickWin();
+    triggerHaptic('success');
     const timeout = window.setTimeout(() => {
       setResolvedTrick([]);
       setResolvingWinner(null);
