@@ -4,6 +4,7 @@ export interface CardProps {
   code: string;
   isPlayable?: boolean;
   isSelected?: boolean;
+  isDisabled?: boolean;
   onClick?: () => void;
   onPointerDown?: (e: React.PointerEvent) => void;
   style?: React.CSSProperties;
@@ -20,6 +21,7 @@ export const PlayingCard: React.FC<CardProps> = ({
   code,
   isPlayable = true,
   isSelected = false,
+  isDisabled = false,
   onClick,
   onPointerDown,
   style,
@@ -40,7 +42,7 @@ export const PlayingCard: React.FC<CardProps> = ({
   return (
     <div
       className={`playing-card ${isRed ? 'red' : 'black'} ${
-        isPlayable ? 'playable' : 'disabled'
+        isDisabled ? 'disabled' : isPlayable ? 'playable' : 'static'
       } ${isSelected ? 'selected' : ''}`}
       style={style}
       onClick={isPlayable ? onClick : undefined}
