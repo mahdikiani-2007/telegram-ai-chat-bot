@@ -23,6 +23,7 @@ export const App: React.FC = () => {
   const [rematchMessage, setRematchMessage] = useState('');
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [handSummaryVisible, setHandSummaryVisible] = useState(false);
+  const [matchOverVisible, setMatchOverVisible] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const authRef = useRef<AuthContext>({ initData: '' });
@@ -282,6 +283,16 @@ export const App: React.FC = () => {
     return () => window.clearTimeout(revealTimer);
   }, [publicState?.stage, publicState?.hand_number]);
 
+  useEffect(() => {
+    if (publicState?.stage !== 'match_ended') {
+      setMatchOverVisible(false);
+      return;
+    }
+    setMatchOverVisible(false);
+    const revealTimer = window.setTimeout(() => setMatchOverVisible(true), 2450);
+    return () => window.clearTimeout(revealTimer);
+  }, [publicState?.stage, publicState?.hand_number]);
+
   const sendWs = (type: string, payload: any): boolean => {
     const socket = wsRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -415,7 +426,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {publicState?.stage === 'match_ended' && (
+      {publicState?.stage === 'match_ended' && matchOverVisible && (
         <MatchOverModal
           isWinner={
             publicState.match_winner_team !== undefined && publicState.match_winner_team !== null
