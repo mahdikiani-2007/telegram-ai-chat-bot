@@ -291,14 +291,19 @@ class HokmService:
                 )
                 return True, "اتاق انتظار لغو شد."
 
+            was_spectator = user_id in room.spectators
             if slot_index is not None and stage == HokmStage.WAITING:
                 room.seat_slots[slot_index] = None
+            if stage == HokmStage.MATCH_ENDED and engine_seat is not None:
+                player = room.engine.players[engine_seat]
+                player.is_connected = False
+                player.disconnect_time = time.time()
             room.spectators.discard(user_id)
             room.rematch_votes.discard(user_id)
             self._user_to_room.pop(user_id, None)
             await self.manager.leave_room(user_id, room_id)
 
-            if stage in (HokmStage.WAITING, HokmStage.MATCH_ENDED):
+            if stage in (HokmStage.WAITING, HokmStage.MATCH_ENDED) or was_spectator:
                 room.seq += 1
                 self._persist_room(room)
                 await self._broadcast_room_state(room)
