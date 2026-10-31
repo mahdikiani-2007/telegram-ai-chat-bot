@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest
 from fastapi.testclient import TestClient
 
+from games.chess.ai import choose_move
 from games.chess.clock import ChessClock
 from games.chess.engine import ChessEngine
 from games.chess.models import GameEndReason, GameResult, TimeControl
@@ -261,6 +262,84 @@ async def test_chess_service_full_game(tmp_path):
     assert "finished_message" in resign_res
     assert resign_res["finished_message"]["payload"]["result"] == "white_wins"
     assert room.status == "finished"
+
+
+@pytest.mark.anyio
+async def test_abandoned_waiting_room_does_not_block_new_game(tmp_path):
+    repo = GameRepository(str(tmp_path / "room_lifecycle.db"))
+    manager = ConnectionManager()
+    service = ChessService(repo, manager)
+
+    first = await service.create_room(401, "Player")
+    assert service.get_rooms_for_player(401) == [first["room_id"]]
+
+    cancelled = await service.cancel_waiting_room(first["room_id"], 401)
+    assert cancelled["ok"] is True
+    assert service.get_rooms_for_player(401) == []
+    assert repo.get_room(first["room_id"])["status"] == "abandoned"
+
+    second = await service.create_room(401, "Player")
+    assert "error" not in second
+    assert second["room_id"] != first["room_id"]
+    assert service.get_room(second["room_id"]).status == "waiting"
+
+
+@pytest.mark.anyio
+async def test_bot_game_abandons_old_invite_and_plays_black(tmp_path):
+    repo = GameRepository(str(tmp_path / "bot_game.db"))
+    manager = ConnectionManager()
+    service = ChessService(repo, manager)
+    ws = _DummyWebSocket()
+    await manager.connect(ws, 402, "Human")
+
+    invite = await service.create_room(402, "Human")
+    bot_game = await service.create_bot_game(402, "Human", "easy")
+    assert "error" not in bot_game
+    assert repo.get_room(invite["room_id"])["status"] == "abandoned"
+
+    room = service.get_room(bot_game["room_id"])
+    assert room is not None
+    assert room.is_bot_game is True
+    assert room.white_id == 402
+    assert room.black_id == -1
+    assert room.bot_difficulty == "easy"
+    assert manager.get_room_members(room.room_id) == {402}
+
+    human_move = await service.make_move(
+        room.room_id, 402, "e2e4", "human-first", 0
+    )
+    assert "error" not in human_move
+    assert room.engine.get_turn() == "black"
+
+    bot_move = await service.make_bot_move(room.room_id)
+    assert "error" not in bot_move
+    assert bot_move["state_message"]["seq"] == 2
+    assert room.engine.get_turn() == "white"
+    assert room.move_history[1]["player_id"] == -1
+    assert room.engine.is_legal_move("g1f3")
+
+
+@pytest.mark.anyio
+async def test_bot_game_blocks_concurrent_match_and_does_not_offer_draw(tmp_path):
+    repo = GameRepository(str(tmp_path / "bot_guard.db"))
+    service = ChessService(repo, ConnectionManager())
+
+    bot_game = await service.create_bot_game(403, "Human", "medium")
+    room_id = bot_game["room_id"]
+
+    second_room = await service.create_room(403, "Human")
+    assert second_room["error"] == "already_in_game"
+    assert second_room["room_id"] == room_id
+
+    draw = await service.offer_draw(room_id, 403)
+    assert draw["error"] == "draw_unavailable"
+
+
+def test_chess_ai_returns_legal_moves_for_each_difficulty():
+    engine = ChessEngine()
+    for difficulty in ("easy", "medium", "hard"):
+        move = choose_move(engine.get_fen(), difficulty)
+        assert engine.is_legal_move(move)
 
 
 # -------------------------------------------------------------
