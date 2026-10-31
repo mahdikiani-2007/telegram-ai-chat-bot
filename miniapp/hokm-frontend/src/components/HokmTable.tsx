@@ -37,6 +37,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
 
   const players: any[] = publicState?.players || [];
   const mySeat = privateState?.seat ?? -1;
+  const layoutSeat = mySeat >= 0 ? mySeat : 0;
   const myCards: string[] = privateState?.cards || [];
   const legalMoves: string[] = privateState?.legal_moves || [];
   const currentTrick: any[] = publicState?.current_trick || [];
@@ -87,7 +88,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
   const isResolvingTrick = currentTrick.length === 0 && resolvedTrick.length > 0;
 
   const getRelativePlayer = (offset: number) => {
-    const seatIdx = (mySeat + offset) % totalSeats;
+    const seatIdx = (layoutSeat + offset) % totalSeats;
     return players.find((player) => player?.seat === seatIdx);
   };
 
@@ -107,7 +108,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
   };
 
   const getTrickCardTransform = (seat: number) => {
-    const relOffset = (seat - mySeat + totalSeats) % totalSeats;
+    const relOffset = (seat - layoutSeat + totalSeats) % totalSeats;
     if (totalSeats === 4) {
       if (relOffset === 0) return 'translateY(36px)';
       if (relOffset === 1) return 'translateX(40px)';
