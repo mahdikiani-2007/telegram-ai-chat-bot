@@ -24,6 +24,12 @@ on:
 permissions:
   contents: write
 
+# Serialize generated-asset commits per branch. Two rapid pushes must not race
+# while independently rebuilding and pushing the same static output.
+concurrency:
+  group: game-assets-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   frontend:
     runs-on: ubuntu-latest
