@@ -168,6 +168,16 @@ class ChessService:
         )
 
         async with self._global_lock:
+            # Repeat the waiting-room cleanup under the global creation lock.
+            # Two concurrent create requests may both pass the earlier cleanup;
+            # this second check makes that race idempotent.
+            pending = [
+                existing for existing in self._rooms.values()
+                if existing.status == "waiting" and existing.player1_id == creator_id
+            ]
+            for old_room in pending:
+                await self._abandon_waiting_room(old_room, creator_id)
+
             active = [
                 existing for existing in self._rooms.values()
                 if existing.status == "active"
@@ -267,6 +277,15 @@ class ChessService:
         )
 
         async with self._global_lock:
+            # Prevent a concurrent invite-room creation from surviving beside
+            # a newly requested bot match.
+            pending = [
+                existing for existing in self._rooms.values()
+                if existing.status == "waiting" and existing.player1_id == creator_id
+            ]
+            for old_room in pending:
+                await self._abandon_waiting_room(old_room, creator_id)
+
             active = [
                 existing for existing in self._rooms.values()
                 if existing.status == "active"
