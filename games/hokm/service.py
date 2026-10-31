@@ -50,6 +50,8 @@ class HokmRoom:
         self.created_at = time.time()
         self.updated_at = time.time()
         self.spectators: set[int] = set()
+        self.rematch_votes: set[int] = set()
+        self.rematch_room_id: Optional[str] = None
         self.ai_task_generation = 0
 
         # Instantiate engine
@@ -97,6 +99,8 @@ class HokmService:
                 "updated_at": room.updated_at,
                 "seat_slots": room.seat_slots,
                 "spectators": sorted(room.spectators),
+                "rematch_votes": sorted(room.rematch_votes),
+                "rematch_room_id": room.rematch_room_id,
             },
             "engine": {
                 "state": asdict(room.engine.state),
@@ -111,6 +115,7 @@ class HokmService:
 
     def _persist_room(self, room: HokmRoom) -> None:
         """Persist complete engine state and seat metadata after each transition."""
+        room.updated_at = time.time()
         stage = room.engine.state.stage
         status = (
             "waiting" if stage == HokmStage.WAITING
@@ -183,6 +188,8 @@ class HokmService:
                 room.updated_at = float(metadata.get("updated_at", row.get("updated_at") or time.time()))
                 room.seat_slots = metadata.get("seat_slots") or [None] * mode.player_count
                 room.spectators = set(metadata.get("spectators") or [])
+                room.rematch_votes = set(metadata.get("rematch_votes") or [])
+                room.rematch_room_id = metadata.get("rematch_room_id")
 
                 state_data = dict(saved_engine["state"])
                 state_data["game_mode"] = GameMode(state_data["game_mode"])
@@ -235,23 +242,159 @@ class HokmService:
         return restored
 
     async def leave_room(self, room_id: str, user_id: int) -> Tuple[bool, str]:
-        """Leave a waiting/finished room or stop spectating; active players cannot silently exit."""
+        """Leave a waiting room, completed room, or spectator seat safely."""
         room = self.rooms.get(room_id)
         if room is None:
             return False, "اتاق پیدا نشد."
 
         async with room.lock:
-            if room.engine.state.stage not in (HokmStage.WAITING, HokmStage.MATCH_ENDED):
-                seat = next(
-                    (player.seat for player in room.engine.players if player.user_id == user_id),
-                    None,
+            stage = room.engine.state.stage
+            slot_index = next(
+                (
+                    index for index, slot in enumerate(room.seat_slots)
+                    if slot and int(slot.get("user_id", 0)) == user_id
+                ),
+                None,
+            )
+            engine_seat = next(
+                (
+                    player.seat for player in room.engine.players
+                    if player.user_id == user_id and not player.is_ai
+                ),
+                None,
+            )
+
+            if stage not in (HokmStage.WAITING, HokmStage.MATCH_ENDED):
+                if engine_seat is not None:
+                    return False, "برای خروج از بازی فعال ابتدا باید بازی تمام شود."
+
+            if stage == HokmStage.WAITING and user_id == room.host_id:
+                for slot in room.seat_slots:
+                    if slot and not slot.get("is_ai"):
+                        self._user_to_room.pop(int(slot["user_id"]), None)
+                        await self.manager.leave_room(int(slot["user_id"]), room_id)
+                for spectator_id in tuple(room.spectators):
+                    self._user_to_room.pop(spectator_id, None)
+                    await self.manager.leave_room(spectator_id, room_id)
+                room.spectators.clear()
+                room.engine.state.stage = HokmStage.MATCH_ENDED
+                room.updated_at = time.time()
+                self.code_to_room.pop(room.invite_code, None)
+                self._user_to_room.pop(user_id, None)
+                self.repo.update_hokm_room_state(
+                    room_id=room_id,
+                    state_json=json.dumps(self._snapshot_room(room), default=self._json_default),
+                    seq=room.seq,
+                    status="abandoned",
+                    result="abandoned",
                 )
-                if seat is not None:
-                    return False, "برای خروج از بازی فعال ابتدا باید بازی را تمام کنید."
+                return True, "اتاق انتظار لغو شد."
+
+            if slot_index is not None and stage == HokmStage.WAITING:
+                room.seat_slots[slot_index] = None
             room.spectators.discard(user_id)
             self._user_to_room.pop(user_id, None)
             await self.manager.leave_room(user_id, room_id)
+
+            if stage == HokmStage.WAITING:
+                self._persist_room(room)
+                await self._broadcast_room_state(room)
             return True, "از اتاق خارج شدید."
+
+    async def request_rematch(
+        self,
+        room_id: str,
+        user_id: int,
+    ) -> Tuple[bool, str, Optional[HokmRoom]]:
+        """Require every human player to consent before restarting the same match."""
+        room = self.rooms.get(room_id)
+        if room is None:
+            return False, "اتاق پیدا نشد.", None
+
+        async with room.lock:
+            if room.engine.state.stage != HokmStage.MATCH_ENDED:
+                return False, "مسابقه هنوز تمام نشده است.", None
+
+            human_ids = {
+                player.user_id for player in room.engine.players if not player.is_ai
+            }
+            if user_id not in human_ids:
+                return False, "فقط بازیکنان مسابقه می‌توانند درخواست بازی مجدد بدهند.", None
+
+            if room.rematch_room_id:
+                rematch = self.rooms.get(room.rematch_room_id)
+                return (
+                    (True, "بازی مجدد قبلاً ساخته شده است.", rematch)
+                    if rematch else (False, "اتاق بازی مجدد پیدا نشد.", None)
+                )
+
+            room.rematch_votes.add(user_id)
+            room.seq += 1
+            self._persist_room(room)
+            await self._broadcast_room_state(room)
+
+            if not human_ids.issubset(room.rematch_votes):
+                return False, f"درخواست ثبت شد ({len(room.rematch_votes)}/{len(human_ids)}). منتظر موافقت سایر بازیکنان.", None
+
+            old_players = [asdict(player) for player in room.engine.players]
+            old_room_id = room.room_id
+            mode = room.game_mode.value
+            old_host_id = room.host_id
+            time_limit = room.turn_time_limit
+            ranked = room.is_ranked
+            allow_spectators = room.allow_spectators
+            invite_code = self._generate_code()
+
+            new_room = HokmRoom(
+                room_id=f"hokm_{secrets.token_hex(8)}",
+                game_mode=room.game_mode,
+                host_id=old_host_id if old_host_id in human_ids else user_id,
+                invite_code=invite_code,
+                turn_time_limit=time_limit,
+                is_ranked=ranked and not any(player["is_ai"] for player in old_players),
+                allow_spectators=allow_spectators,
+            )
+            new_room.seat_slots = [
+                {
+                    "user_id": player["user_id"],
+                    "name": player["name"],
+                    "team": player.get("team"),
+                    "is_ai": player.get("is_ai", False),
+                    "ai_difficulty": player.get("ai_difficulty"),
+                    "is_connected": player.get("is_connected", True),
+                }
+                for player in old_players
+            ]
+            self.rooms[new_room.room_id] = new_room
+            self.code_to_room[new_room.invite_code] = new_room.room_id
+            for player in old_players:
+                if not player.get("is_ai"):
+                    self._user_to_room[int(player["user_id"])] = new_room.room_id
+                    await self.manager.leave_room(int(player["user_id"]), old_room_id)
+                    await self.manager.join_room(int(player["user_id"]), new_room.room_id)
+
+            self.repo.save_hokm_room(
+                room_id=new_room.room_id,
+                game_type=mode,
+                host_id=new_room.host_id,
+                invite_code=new_room.invite_code,
+                state_json=json.dumps(new_room.engine.get_public_state()),
+                players=[
+                    {**slot, "seat": index}
+                    for index, slot in enumerate(new_room.seat_slots)
+                ],
+                initial_time_ms=time_limit * 1000,
+            )
+            self._persist_room(new_room)
+            room.rematch_room_id = new_room.room_id
+            room.seq += 1
+            self._persist_room(room)
+
+        started, message = await self.start_game(new_room.room_id, new_room.host_id)
+        if not started:
+            return False, message, None
+        await self._broadcast_room_state(new_room)
+        return True, "بازی مجدد شروع شد.", new_room
 
     def _generate_code(self) -> str:
         chars = string.ascii_uppercase + string.digits
