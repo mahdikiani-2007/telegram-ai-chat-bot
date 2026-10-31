@@ -21,6 +21,9 @@ export const App: React.FC = () => {
   const [isConnected, setIsConnected] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
   const [rematchMessage, setRematchMessage] = useState('');
+  const [chatMessages, setChatMessages] = useState<any[]>([]);
+  const [handSummaryVisible, setHandSummaryVisible] = useState(false);
+  const [matchOverVisible, setMatchOverVisible] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
   const authRef = useRef<AuthContext>({ initData: '' });
@@ -118,6 +121,7 @@ export const App: React.FC = () => {
 
               if (roomIdRef.current !== incomingRoomId) {
                 sequenceRef.current = -1;
+                setChatMessages([]);
                 setActiveRoom(incomingRoomId || null);
               }
               if (incomingSeq >= 0 && incomingSeq < sequenceRef.current) return;
@@ -133,11 +137,23 @@ export const App: React.FC = () => {
               return;
             }
 
+            if (message.type === 'hokm.chat.message' || message.type === 'hokm.chat.reaction') {
+              if (message.room_id && message.room_id !== roomIdRef.current) return;
+              const chatEntry = {
+                ...message,
+                id: message.message_id || String(message.user_id || 'system') + '-' + String(message.sent_at || Date.now()) + '-' + Math.random().toString(36).slice(2, 7),
+                isReaction: message.type === 'hokm.chat.reaction',
+              };
+              setChatMessages((current) => [...current.slice(-99), chatEntry]);
+              return;
+            }
+
             if (message.type === 'hokm.room.created' || message.type === 'hokm.room.joined') {
               const incomingRoomId = String(message.room_id || '');
               if (incomingRoomId && roomIdRef.current !== incomingRoomId) {
                 sequenceRef.current = -1;
                 setActiveRoom(incomingRoomId);
+                setChatMessages([]);
                 setPublicState(null);
                 setPrivateState(null);
               }
@@ -148,6 +164,7 @@ export const App: React.FC = () => {
               if (!message.room_id || message.room_id === roomIdRef.current) {
                 sequenceRef.current = -1;
                 setActiveRoom(null);
+                setChatMessages([]);
                 setPublicState(null);
                 setPrivateState(null);
                 setRematchMessage('');
@@ -165,6 +182,7 @@ export const App: React.FC = () => {
               if (nextRoomId) {
                 sequenceRef.current = -1;
                 setActiveRoom(nextRoomId);
+                setChatMessages([]);
                 setPublicState(null);
                 setPrivateState(null);
                 setRematchMessage('');
@@ -255,6 +273,26 @@ export const App: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    if (publicState?.stage !== 'hand_ended') {
+      setHandSummaryVisible(false);
+      return;
+    }
+    setHandSummaryVisible(false);
+    const revealTimer = window.setTimeout(() => setHandSummaryVisible(true), 2450);
+    return () => window.clearTimeout(revealTimer);
+  }, [publicState?.stage, publicState?.hand_number]);
+
+  useEffect(() => {
+    if (publicState?.stage !== 'match_ended') {
+      setMatchOverVisible(false);
+      return;
+    }
+    setMatchOverVisible(false);
+    const revealTimer = window.setTimeout(() => setMatchOverVisible(true), 2450);
+    return () => window.clearTimeout(revealTimer);
+  }, [publicState?.stage, publicState?.hand_number]);
+
   const sendWs = (type: string, payload: any): boolean => {
     const socket = wsRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -303,7 +341,8 @@ export const App: React.FC = () => {
   };
 
   const handleSendChat = (text: string) => {
-    if (activeRoomId) sendWs('hokm.chat.message', { room_id: activeRoomId, text });
+    const cleanText = text.trim().slice(0, 150);
+    if (activeRoomId && cleanText) sendWs('hokm.chat.message', { room_id: activeRoomId, text: cleanText });
   };
 
   const handleLeaveRoom = () => {
@@ -356,6 +395,7 @@ export const App: React.FC = () => {
           myUserId={user?.user_id}
           onPlayCard={handlePlayCard}
           onSendChat={handleSendChat}
+          chatMessages={chatMessages}
         />
       )}
 
@@ -378,7 +418,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {publicState?.stage === 'hand_ended' && publicState?.last_hand_summary && (
+      {publicState?.stage === 'hand_ended' && handSummaryVisible && publicState?.last_hand_summary && (
         <HandSummaryModal
           summary={publicState.last_hand_summary}
           gameMode={publicState.game_mode}
@@ -386,7 +426,7 @@ export const App: React.FC = () => {
         />
       )}
 
-      {publicState?.stage === 'match_ended' && (
+      {publicState?.stage === 'match_ended' && matchOverVisible && (
         <MatchOverModal
           isWinner={
             publicState.match_winner_team !== undefined && publicState.match_winner_team !== null

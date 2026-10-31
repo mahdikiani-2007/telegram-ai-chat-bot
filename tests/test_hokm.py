@@ -496,3 +496,72 @@ def test_elo_ratings(tmp_path):
     assert repo.rating_to_tier(1600) == "Platinum"
     assert repo.rating_to_tier(1800) == "Diamond"
     assert repo.rating_to_tier(2000) == "Master"
+
+
+@pytest.mark.anyio
+async def test_hokm_completed_trick_locks_next_move_until_resolution_window(tmp_path):
+    repo = GameRepository(str(tmp_path / "hokm_trick_resolution.db"))
+    service = HokmService(repo, ConnectionManager())
+    room = await service.create_room(951, "Host", "hokm_2p")
+    ok, _message, joined = await service.join_room(952, "Guest", room.invite_code)
+    assert ok and joined is room
+
+    engine = room.engine
+    engine.initialize_players(room.seat_slots)
+    engine.start_ceremony()
+    engine.start_new_hand()
+    assert engine.choose_trump(engine.state.hakem_seat, "S") is True
+
+    for _ in range(16):
+        seat = engine.state.current_turn_seat
+        assert seat is not None
+        offered = engine.state.draft_offered_cards
+        assert offered
+        assert engine.select_draft_card(seat, offered[0]) is True
+
+    assert engine.state.stage == HokmStage.PLAYING
+
+    first_seat = engine.state.current_turn_seat
+    assert first_seat is not None
+    first_card = engine.get_private_state(first_seat)["legal_moves"][0]
+    first_ok, _ = await service.handle_play_card(
+        room.room_id,
+        engine.players[first_seat].user_id,
+        first_card,
+    )
+    assert first_ok is True
+
+    second_seat = engine.state.current_turn_seat
+    assert second_seat is not None
+    second_card = engine.get_private_state(second_seat)["legal_moves"][0]
+    second_ok, _ = await service.handle_play_card(
+        room.room_id,
+        engine.players[second_seat].user_id,
+        second_card,
+    )
+    assert second_ok is True
+    assert room.trick_resolution_until > time.time()
+    assert len(engine.state.current_trick) == 0
+
+    next_seat = engine.state.current_turn_seat
+    assert next_seat is not None
+    next_card = engine.get_private_state(next_seat)["legal_moves"][0]
+    cards_before = list(engine.players[next_seat].cards)
+
+    blocked, message = await service.handle_play_card(
+        room.room_id,
+        engine.players[next_seat].user_id,
+        next_card,
+    )
+    assert blocked is False
+    assert "جمع" in message
+    assert engine.players[next_seat].cards == cards_before
+
+    room.trick_resolution_until = time.time() - 0.01
+    accepted, _ = await service.handle_play_card(
+        room.room_id,
+        engine.players[next_seat].user_id,
+        next_card,
+    )
+    assert accepted is True
+    assert next_card not in engine.players[next_seat].cards

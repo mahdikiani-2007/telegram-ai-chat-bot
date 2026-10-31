@@ -24,10 +24,10 @@ on:
 permissions:
   contents: write
 
-# Serialize generated-asset commits per branch. Two rapid pushes must not race
-# while independently rebuilding and pushing the same static output.
+# Use the source branch name for both push and pull_request events so their
+# generated-asset builds share one lock and cannot race while pushing output.
 concurrency:
-  group: game-assets-${{ github.ref }}
+  group: game-assets-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
