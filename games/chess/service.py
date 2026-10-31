@@ -732,6 +732,8 @@ class ChessService:
         room = self.get_room(room_id)
         if not room or room.status != "active":
             return {"error": "game_not_active", "message": "بازی فعال نیست."}
+        if room.is_bot_game:
+            return {"error": "draw_unavailable", "message": "در بازی با ربات امکان توافق تساوی وجود ندارد."}
 
         async with room.lock:
             if not room.draw_offered_by:
@@ -920,7 +922,10 @@ class ChessService:
         }
 
     async def recover_from_db(self) -> int:
-        """On process startup, restore all active/waiting rooms from SQLite."""
+        """On process startup, expire old invite rooms before restoring matches."""
+        expired = self.repo.cleanup_expired_rooms()
+        if expired:
+            log.info("Marked %d expired chess invite room(s) as abandoned", expired)
         active_rooms = self.repo.get_all_active_rooms()
         count = 0
         for r_dict in active_rooms:
