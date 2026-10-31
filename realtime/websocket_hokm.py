@@ -71,8 +71,15 @@ async def handle_hokm_websocket(
                 await ws.send_json({"type": "error", "error": "invalid_json"})
                 continue
 
+            if not isinstance(data, dict):
+                await ws.send_json({"type": "error", "error": "invalid_message"})
+                continue
+
             msg_type = data.get("type")
             payload = data.get("payload", {})
+            if not isinstance(payload, dict):
+                await ws.send_json({"type": "error", "error": "invalid_payload"})
+                continue
 
             if msg_type == "ping":
                 await ws.send_json({"type": "pong"})
@@ -136,6 +143,40 @@ async def handle_hokm_websocket(
                         "message": msg,
                     })
                     await hokm_service._broadcast_room_state(room)
+
+            elif msg_type == "hokm.room.leave":
+                room_id = str(payload.get("room_id") or "").strip()
+                if not room_id:
+                    await ws.send_json({"type": "error", "error": "شناسه اتاق الزامی است."})
+                    continue
+                ok, message = await hokm_service.leave_room(room_id, user_id)
+                if not ok:
+                    await ws.send_json({"type": "error", "error": message})
+                else:
+                    await ws.send_json({
+                        "type": "hokm.room.left",
+                        "room_id": room_id,
+                        "message": message,
+                    })
+
+            elif msg_type == "hokm.match.rematch":
+                room_id = str(payload.get("room_id") or "").strip()
+                if not room_id:
+                    await ws.send_json({"type": "error", "error": "شناسه مسابقه الزامی است."})
+                    continue
+                ok, message, new_room = await hokm_service.request_rematch(room_id, user_id)
+                if new_room is not None:
+                    await ws.send_json({
+                        "type": "hokm.match.rematch.started",
+                        "room_id": new_room.room_id,
+                        "message": message,
+                    })
+                elif not ok:
+                    await ws.send_json({
+                        "type": "hokm.match.rematch.pending",
+                        "room_id": room_id,
+                        "message": message,
+                    })
 
             elif msg_type == "hokm.room.add_ai":
                 room_id = payload.get("room_id")
