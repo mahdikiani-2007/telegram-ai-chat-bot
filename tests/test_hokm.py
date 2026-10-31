@@ -349,6 +349,8 @@ async def test_hokm_disconnect_grace_replaces_seat_with_ai(tmp_path):
     disconnected.is_connected = False
     disconnected.disconnect_time = time.time() - 91
     room.seat_slots[1]["is_connected"] = False
+    room.engine.state.current_turn_seat = 0
+    room.engine.state.action_deadline = time.time() + 30
     service._persist_room(room)
 
     await service.check_timeouts()
