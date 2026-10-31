@@ -65,6 +65,19 @@ export const App: React.FC = () => {
     },
   });
 
+  const cancelWaitingRoom = async () => {
+    if (roomId) {
+      try {
+        await cancelRoom(roomId);
+      } catch (error) {
+        console.warn('Failed to cancel waiting chess room:', error);
+      }
+    }
+    setRoomId('');
+    setInviteCode('');
+    setScreen('lobby');
+  };
+
   // Deep-link check for ?invite=CODE on load
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
