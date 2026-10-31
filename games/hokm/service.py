@@ -441,6 +441,8 @@ class HokmService:
         allow_spectators: bool = True,
     ) -> HokmRoom:
         """Creates a new Hokm room, releasing only old waiting/completed rooms."""
+        if turn_time_limit not in {0, 15, 30, 45, 60}:
+            raise ValueError("زمان هر حرکت باید یکی از ۰، ۱۵، ۳۰، ۴۵ یا ۶۰ ثانیه باشد.")
         existing_room_id = self._user_to_room.get(host_id)
         if existing_room_id:
             existing_room = self.rooms.get(existing_room_id)
