@@ -145,10 +145,13 @@ class ChessService:
         creator_name: str,
         time_control_key: str = "blitz_5_0",
     ) -> Dict[str, Any]:
-        """Create a private game room with an unguessable ID and invitation code."""
+        """Create a private room, replacing stale waiting invites atomically."""
+        await self.abandon_waiting_rooms(creator_id)
+
         room_id = secrets.token_urlsafe(12)
         invite_code = secrets.token_urlsafe(8)
         tc = TimeControl.from_key(time_control_key)
+        now = time.time()
         clock = ChessClock(tc.initial_ms, tc.initial_ms, tc.increment_ms)
 
         room = ChessRoom(
@@ -156,38 +159,58 @@ class ChessService:
             status="waiting",
             player1_id=creator_id,
             player1_name=creator_name,
-            time_control_key=time_control_key,
+            time_control_key=tc.key,
             time_control=tc,
             clock=clock,
             invite_code=invite_code,
-            created_at=time.time(),
-            updated_at=time.time(),
+            created_at=now,
+            updated_at=now,
         )
 
         async with self._global_lock:
+            active = [
+                existing for existing in self._rooms.values()
+                if existing.status == "active"
+                and creator_id in (existing.player1_id, existing.player2_id)
+            ]
+            if active:
+                return {
+                    "error": "already_in_game",
+                    "room_id": active[0].room_id,
+                    "message": "شما یک بازی فعال دارید؛ ابتدا آن را ادامه دهید یا تمام کنید.",
+                }
+
+            self.repo.create_room(
+                room_id=room_id,
+                player1_id=creator_id,
+                initial_time_ms=tc.initial_ms,
+                increment_ms=tc.increment_ms,
+                invite_code=invite_code,
+                state_json=json.dumps({"fen": room.engine.get_fen(), "status": "waiting"}),
+                expires_at=now + 3600 * 24,
+            )
             self._rooms[room_id] = room
 
-        # Persist room to database
-        self.repo.create_room(
-            room_id=room_id,
-            player1_id=creator_id,
-            initial_time_ms=tc.initial_ms,
-            increment_ms=tc.increment_ms,
-            invite_code=invite_code,
-            state_json=json.dumps({"fen": room.engine.get_fen(), "status": "waiting"}),
-            expires_at=time.time() + 3600 * 24,  # 24h expiration for waiting rooms
-        )
-
         # The creator's socket is usually already open while the lobby is
-        # displayed. Register it now so game.start and subsequent state events
-        # are delivered to the creator as soon as the opponent joins.
+        # displayed. Register it so the join event reaches the waiting player.
         await self.manager.join_room(creator_id, room_id)
 
-        log.info("Chess room created: %s by user %d (%s) [TC: %s]", room_id, creator_id, creator_name, time_control_key)
+        log.info(
+            "Chess room created: %s by user %d (%s) [TC: %s]",
+            room_id,
+            creator_id,
+            creator_name,
+            time_control_key,
+        )
         return {
             "room_id": room_id,
             "invite_code": invite_code,
-            "time_control": {"key": tc.key, "label": tc.label, "initial_ms": tc.initial_ms, "increment_ms": tc.increment_ms},
+            "time_control": {
+                "key": tc.key,
+                "label": tc.label,
+                "initial_ms": tc.initial_ms,
+                "increment_ms": tc.increment_ms,
+            },
         }
 
     async def create_bot_game(
@@ -201,6 +224,7 @@ class ChessService:
         if difficulty not in BOT_DIFFICULTIES:
             return {"error": "invalid_difficulty", "message": "سطح دشواری ربات معتبر نیست."}
 
+        await self.abandon_waiting_rooms(creator_id)
         tc = TimeControl.from_key(time_control_key)
         room_id = secrets.token_urlsafe(12)
         now = time.time()
