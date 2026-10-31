@@ -188,6 +188,9 @@ class HokmService:
                 room.created_at = float(metadata.get("created_at", row.get("created_at") or time.time()))
                 room.updated_at = float(metadata.get("updated_at", row.get("updated_at") or time.time()))
                 room.seat_slots = metadata.get("seat_slots") or [None] * mode.player_count
+                for slot in room.seat_slots:
+                    if slot and not slot.get("is_ai"):
+                        slot["is_connected"] = False
                 room.spectators = set(metadata.get("spectators") or [])
                 room.rematch_votes = set(metadata.get("rematch_votes") or [])
                 room.rematch_room_id = metadata.get("rematch_room_id")
@@ -215,6 +218,10 @@ class HokmService:
                 room.engine.players = [
                     PlayerSeat(**player) for player in saved_engine.get("players", [])
                 ]
+                for player in room.engine.players:
+                    if not player.is_ai:
+                        player.is_connected = False
+                        player.disconnect_time = time.time()
 
                 summary = saved_engine.get("last_hand_summary")
                 if summary:
@@ -908,7 +915,7 @@ class HokmService:
                     "ai_difficulty": slot.get("ai_difficulty"),
                     "cards_remaining": 0,
                     "tricks_won": 0,
-                    "is_connected": True,
+                    "is_connected": bool(slot.get("is_connected", True)),
                 }
                 if slot
                 else None
