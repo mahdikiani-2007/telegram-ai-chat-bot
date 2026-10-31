@@ -61,7 +61,9 @@ def create_app() -> FastAPI:
     async def lifespan(app_instance: FastAPI):
         log.info("FastAPI service starting up...")
         recovered = await chess_service.recover_from_db()
+        recovered_hokm = await hokm_service.recover_from_db()
         log.info("Restored %d active chess room(s) from SQLite", recovered)
+        log.info("Restored %d active Hokm room(s) from SQLite", recovered_hokm)
         timeout_task = asyncio.create_task(_timeout_checker_loop())
         hokm_timeout_task = asyncio.create_task(_hokm_timeout_checker_loop())
         cleaner_task = asyncio.create_task(_matchmaking_cleaner_loop())
