@@ -16,7 +16,16 @@ from games.hokm.shared.shuffle import secure_shuffle
 from games.hokm.shared.tricks import get_legal_moves, resolve_trick, validate_card_play
 from games.hokm.three_player.engine import ThreePlayerHokmEngine
 from games.hokm.two_player.engine import TwoPlayerHokmEngine
+from realtime.manager import ConnectionManager
 from repositories.games import GameRepository
+
+
+class _DummyWebSocket:
+    async def close(self, code=1000, reason=""):
+        return None
+
+    async def send_json(self, message):
+        return None
 
 
 def test_deck_and_cards():
@@ -249,11 +258,16 @@ async def test_hokm_private_snapshot_recovers_waiting_and_dealt_hands(tmp_path):
 async def test_hokm_waiting_room_leave_and_unanimous_rematch(tmp_path):
     db_file = str(tmp_path / "hokm_room_lifecycle.db")
     repo = GameRepository(db_file)
-    service = HokmService(repo, ConnectionManager())
+    manager = ConnectionManager()
+    service = HokmService(repo, manager)
+    await manager.connect(_DummyWebSocket(), 601, "Host")
+    await manager.connect(_DummyWebSocket(), 602, "Guest")
 
     waiting = await service.create_room(601, "Host", "hokm_2p")
+    await manager.join_room(601, waiting.room_id)
     ok, _message, room = await service.join_room(602, "Guest", waiting.invite_code)
     assert ok and room is waiting
+    await manager.join_room(602, room.room_id)
     leave_ok, _ = await service.leave_room(room.room_id, 602)
     assert leave_ok is True
     assert room.seat_slots[1] is None
@@ -261,6 +275,7 @@ async def test_hokm_waiting_room_leave_and_unanimous_rematch(tmp_path):
     # Rejoin and put the room into a completed-match state.
     ok, _message, room = await service.join_room(602, "Guest", waiting.invite_code)
     assert ok
+    await manager.join_room(602, room.room_id)
     room.engine.initialize_players(room.seat_slots)
     room.engine.state.stage = HokmStage.MATCH_ENDED
     room.engine.state.match_winner_seat = 0
