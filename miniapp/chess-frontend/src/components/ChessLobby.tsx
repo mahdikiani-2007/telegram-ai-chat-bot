@@ -237,6 +237,42 @@ export const ChessLobby: React.FC<ChessLobbyProps> = ({
         )}
       </div>
 
+      {/* Play against AI */}
+      <div className="glass-panel">
+        <div style={{ fontSize: 15, fontWeight: 900, marginBottom: 5 }}>🤖 بازی با ربات</div>
+        <div style={{ fontSize: 12, color: 'var(--dim)', lineHeight: 1.8, marginBottom: 12 }}>
+          سطح دشواری ربات را انتخاب کن و بدون نیاز به حریف آنلاین بازی را شروع کن.
+        </div>
+
+        <div style={{ fontSize: 12, color: 'var(--dim)', marginBottom: 7 }}>سطح ربات</div>
+        <div className="tc-chips-grid" style={{ marginBottom: 12 }}>
+          {([
+            { key: 'easy', label: 'مبتدی' },
+            { key: 'medium', label: 'متوسط' },
+            { key: 'hard', label: 'حرفه‌ای' },
+          ] as const).map((level) => (
+            <div
+              key={level.key}
+              className={`tc-chip ${botDifficulty === level.key ? 'active' : ''}`}
+              onClick={() => {
+                setBotDifficulty(level.key);
+                hapticTap('light');
+              }}
+            >
+              {level.label}
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontSize: 11, color: 'var(--dim)', marginBottom: 12 }}>
+          کنترل زمان: {TIME_CONTROLS.find((tc) => tc.key === selectedTc)?.label}
+        </div>
+
+        <button className="btn-primary" style={{ width: '100%' }} onClick={handlePlayBot} disabled={loading}>
+          {loading ? 'در حال آماده‌سازی...' : '♟️ شروع بازی با ربات'}
+        </button>
+      </div>
+
       {/* Join with Invite Code */}
       <div className="glass-panel">
         <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 8 }}>🔗 پیوستن با کد دعوت</div>
