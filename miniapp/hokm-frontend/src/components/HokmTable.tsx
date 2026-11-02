@@ -33,6 +33,11 @@ const SUITS: Record<string, { name: string; symbol: string; red: boolean }> = {
   C: { name: 'گشنیز', symbol: '♣', red: false },
 };
 const QUICK_REACTIONS = ['👏', '🔥', '👑', 'ایول!', 'دمت گرم', 'خسته نباشی'];
+const CAPTURE_CARD_STYLES = Array.from({ length: 5 }, (_, index): React.CSSProperties => ({
+  transform:
+    'translate(' + (index * 3.2) + 'px, ' + (-index * 2.1) +
+    'px) rotate(' + ((index - 2) * 3) + 'deg)',
+}));
 
 const suitLabel = (suit?: string) => {
   if (!suit) return '';
@@ -482,8 +487,7 @@ const HokmTableComponent: React.FC<HokmTableProps> = ({
             key={String(team) + '-' + String(index)}
             code="BACK"
             isPlayable={false}
-            style={{ transform: 'translate(' + (index * 3.2) + 'px, ' + (-index * 2.1) +
-              'px) rotate(' + ((index - 2) * 3) + 'deg)' }}
+            style={CAPTURE_CARD_STYLES[index]}
           />
         ))}
         <span className="capture-total">{count}</span>
