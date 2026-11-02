@@ -362,7 +362,7 @@ export const App: React.FC = () => {
   const isPlaying = Boolean(publicState && publicState.stage !== 'waiting');
 
   return (
-    <div className="hokm-app-shell">
+    <div className="hokm-app-shell flex min-h-screen w-full flex-col">
       <header className="app-header">
         <div className="app-brand">
           <span>👑</span>
