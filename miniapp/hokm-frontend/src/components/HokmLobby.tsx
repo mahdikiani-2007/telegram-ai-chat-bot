@@ -84,8 +84,8 @@ export const HokmLobby: React.FC<HokmLobbyProps> = ({
   const modeTitle = MODES.find((mode) => mode.id === selectedMode)?.title || 'حکم';
 
   return (
-    <div className="lobby-layout">
-      <section className="lobby-profile-card">
+    <div className="lobby-layout mx-auto flex w-full max-w-5xl flex-col gap-5">
+      <section className="lobby-profile-card flex items-center">
         <div className="lobby-profile-orb" aria-hidden="true">♛</div>
         <div className="lobby-profile-copy">
           <span className="lobby-overline">WELCOME TO THE TABLE</span>
@@ -124,7 +124,7 @@ export const HokmLobby: React.FC<HokmLobbyProps> = ({
             <b>جایگاه بازیکنان</b>
             <span>{(activeRoom.players || []).filter(Boolean).length} از {activeRoom.players?.length || 0}</span>
           </div>
-          <div className="waiting-roster">
+          <div className="waiting-roster grid gap-2">
             {activeRoom.players?.map((player: any, index: number) => (
               <div className={'roster-seat ' + (player ? 'occupied' : 'empty')} key={index}>
                 <span className="roster-avatar">{player ? (player.is_ai ? '🤖' : '👤') : '＋'}</span>
@@ -170,7 +170,7 @@ export const HokmLobby: React.FC<HokmLobbyProps> = ({
               </div>
               <span className="section-step">۰۱ / ۰۳</span>
             </div>
-            <div className="mode-grid">
+            <div className="mode-grid grid grid-cols-3 gap-3">
               {MODES.map((mode) => (
                 <button
                   type="button"
@@ -198,7 +198,7 @@ export const HokmLobby: React.FC<HokmLobbyProps> = ({
               <span className="section-step">۰۲ / ۰۳</span>
             </div>
 
-            <div className="settings-grid">
+            <div className="settings-grid grid grid-cols-2 gap-3">
               <div className="setting-card">
                 <div className="setting-title">
                   <span>درجه‌ی هوش مصنوعی</span>
