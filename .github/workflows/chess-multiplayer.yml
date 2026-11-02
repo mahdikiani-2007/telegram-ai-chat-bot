@@ -6,6 +6,7 @@ on:
       - fix/chess-multiplayer-sync-orientation
       - feat/chess-room-lifecycle-and-bot
       - fix/hokm-engine-ui-animation
+      - feat/hokm-premium-visual-rebuild
   pull_request:
     branches:
       - main

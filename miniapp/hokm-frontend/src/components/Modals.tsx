@@ -7,134 +7,98 @@ interface CeremonyModalProps {
   players: Array<{ seat: number; name: string }>;
 }
 
-export const CeremonyModal: React.FC<CeremonyModalProps> = ({
-  ceremonyCards,
-  hakemSeat,
-  players,
-}) => {
-  return (
-    <div className="modal-overlay">
-      <div className="modal-card">
-        <h2 style={{ color: 'var(--gold)', fontSize: 20, marginBottom: 8 }}>👑 مراسم تعیین حاکم</h2>
-        <p style={{ color: 'var(--text-dim)', fontSize: 13, marginBottom: 18 }}>
-          هر بازیکن یک کارت می‌کشد. بالاترین کارت (با اولویت پیک &gt; دل &gt; خشت &gt; گشنیز) حاکم می‌شود.
-        </p>
+export const CeremonyModal: React.FC<CeremonyModalProps> = ({ ceremonyCards, hakemSeat, players }) => (
+  <div className="game-modal-backdrop">
+    <section className="game-modal ceremony-modal" role="dialog" aria-modal="true" aria-labelledby="ceremony-title">
+      <span className="modal-kicker">THE ROYAL DRAW</span>
+      <div className="modal-emblem">♛</div>
+      <h2 id="ceremony-title">مراسم تعیین حاکم</h2>
+      <p className="modal-description">هر بازیکن یک کارت می‌کشد؛ بالاترین کارت، حاکم دست خواهد بود.</p>
 
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
-          {players.map((p) => {
-            const cardCode = ceremonyCards[String(p.seat)] || ceremonyCards[p.seat];
-            const isHakem = hakemSeat === p.seat;
-            return (
-              <div key={p.seat} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: isHakem ? 'var(--gold)' : 'var(--text-main)' }}>
-                  {p.name} {isHakem && '👑'}
-                </span>
-                {cardCode ? (
-                  <PlayingCard code={cardCode} isPlayable={false} />
-                ) : (
-                  <PlayingCard code="BACK" isPlayable={false} />
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {hakemSeat !== null && (
-          <div style={{ color: 'var(--gold-light)', fontWeight: 800, fontSize: 15, marginTop: 10 }}>
-            {players.find((p) => p.seat === hakemSeat)?.name} حاکم شد! 🃏
-          </div>
-        )}
+      <div className="ceremony-card-grid">
+        {players.map((player) => {
+          const card = ceremonyCards[String(player.seat)] || ceremonyCards[player.seat];
+          const winner = hakemSeat === player.seat;
+          return (
+            <div className={'ceremony-player ' + (winner ? 'winner' : '')} key={player.seat}>
+              <span className="ceremony-player-name">{player.name}</span>
+              {card ? <PlayingCard code={card} isPlayable={false} /> : <PlayingCard code="BACK" />}
+              {winner && <span className="ceremony-crown">♛ حاکم</span>}
+            </div>
+          );
+        })}
       </div>
-    </div>
-  );
-};
+
+      {hakemSeat !== null && (
+        <div className="ceremony-result">
+          <span>👑</span>
+          <b>{players.find((player) => player.seat === hakemSeat)?.name || 'بازیکن'}</b>
+          <span>حاکم شد</span>
+        </div>
+      )}
+    </section>
+  </div>
+);
 
 interface TrumpSelectModalProps {
   onSelectSuit: (suit: string) => void;
 }
 
-export const TrumpSelectModal: React.FC<TrumpSelectModalProps> = ({ onSelectSuit }) => {
-  const suits = [
-    { key: 'S', name: 'پیک', symbol: '♠', color: '#0f172a' },
-    { key: 'H', name: 'دل', symbol: '♥', color: '#dc2626' },
-    { key: 'D', name: 'خشت', symbol: '♦', color: '#dc2626' },
-    { key: 'C', name: 'گشنیز', symbol: '♣', color: '#0f172a' },
-  ];
+const TRUMP_OPTIONS = [
+  { key: 'S', name: 'پیک', symbol: '♠', red: false, description: 'قدرت و تمرکز' },
+  { key: 'H', name: 'دل', symbol: '♥', red: true, description: 'ریسک حساب‌شده' },
+  { key: 'D', name: 'خشت', symbol: '♦', red: true, description: 'بازی تهاجمی' },
+  { key: 'C', name: 'گشنیز', symbol: '♣', red: false, description: 'انتخاب هوشمند' },
+];
 
-  return (
-    <div className="modal-overlay">
-      <div className="modal-card">
-        <h2 style={{ color: 'var(--gold)', fontSize: 22, marginBottom: 6 }}>👑 شما حاکم هستید</h2>
-        <p style={{ color: 'var(--text-dim)', fontSize: 14, marginBottom: 20 }}>
-          بر اساس ۵ برگ نخست خود، خال حکم را برگزینید:
-        </p>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 12 }}>
-          {suits.map((s) => (
-            <button
-              key={s.key}
-              onClick={() => onSelectSuit(s.key)}
-              style={{
-                background: 'rgba(255, 255, 255, 0.95)',
-                color: s.color,
-                border: '2px solid var(--gold)',
-                borderRadius: 16,
-                padding: '16px 12px',
-                fontSize: 20,
-                fontWeight: 900,
-                cursor: 'pointer',
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: 4,
-                boxShadow: '0 8px 20px rgba(0,0,0,0.3)',
-                transition: 'transform 0.15s ease',
-              }}
-              onMouseEnter={(e) => (e.currentTarget.style.transform = 'scale(1.05)')}
-              onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
-            >
-              <span style={{ fontSize: 32 }}>{s.symbol}</span>
-              <span style={{ fontSize: 16, fontFamily: 'Vazirmatn' }}>{s.name}</span>
-            </button>
-          ))}
-        </div>
+export const TrumpSelectModal: React.FC<TrumpSelectModalProps> = ({ onSelectSuit }) => (
+  <div className="game-modal-backdrop">
+    <section className="game-modal trump-modal" role="dialog" aria-modal="true" aria-labelledby="trump-title">
+      <span className="modal-kicker">YOU ARE THE HAKEM</span>
+      <div className="modal-emblem">♛</div>
+      <h2 id="trump-title">خال حکم را انتخاب کن</h2>
+      <p className="modal-description">پنج کارت اولت را بررسی کن و خالی را انتخاب کن که بیشترین قدرت را به دستت می‌دهد.</p>
+      <div className="trump-choice-grid">
+        {TRUMP_OPTIONS.map((suit) => (
+          <button
+            type="button"
+            key={suit.key}
+            className={'trump-choice ' + (suit.red ? 'red-suit' : 'black-suit')}
+            onClick={() => onSelectSuit(suit.key)}
+          >
+            <span className="trump-choice-symbol">{suit.symbol}</span>
+            <b>{suit.name}</b>
+            <small>{suit.description}</small>
+          </button>
+        ))}
       </div>
-    </div>
-  );
-};
+    </section>
+  </div>
+);
 
 interface TwoPlayerDraftModalProps {
   offeredCards: string[];
   onSelectCard: (card: string) => void;
 }
 
-export const TwoPlayerDraftModal: React.FC<TwoPlayerDraftModalProps> = ({
-  offeredCards,
-  onSelectCard,
-}) => {
-  return (
-    <div className="modal-overlay">
-      <div className="modal-card">
-        <h2 style={{ color: 'var(--gold)', fontSize: 20, marginBottom: 6 }}>🃏 انتخاب کارت (۲ نفره)</h2>
-        <p style={{ color: 'var(--text-dim)', fontSize: 13, marginBottom: 18 }}>
-          کارتی که می‌خواهید در دست خود نگه دارید را لمس کنید. کارت دیگر به صورت پنهان می‌سوزد:
-        </p>
-
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 24, marginBottom: 10 }}>
-          {offeredCards.map((code) => (
-            <div
-              key={code}
-              onClick={() => onSelectCard(code)}
-              style={{ cursor: 'pointer', transform: 'scale(1.15)', transition: 'transform 0.15s ease' }}
-            >
-              <PlayingCard code={code} isPlayable={true} />
-            </div>
-          ))}
-        </div>
+export const TwoPlayerDraftModal: React.FC<TwoPlayerDraftModalProps> = ({ offeredCards, onSelectCard }) => (
+  <div className="game-modal-backdrop">
+    <section className="game-modal draft-modal" role="dialog" aria-modal="true" aria-labelledby="draft-title">
+      <span className="modal-kicker">TWO PLAYER MODE</span>
+      <div className="modal-emblem">♠</div>
+      <h2 id="draft-title">کارتت را انتخاب کن</h2>
+      <p className="modal-description">از بین این دو کارت، یکی را در دستت نگه دار. کارت دیگر از بازی خارج می‌شود.</p>
+      <div className="draft-card-options">
+        {offeredCards.map((card) => (
+          <button type="button" className="draft-card-option" key={card} onClick={() => onSelectCard(card)}>
+            <PlayingCard code={card} isPlayable={true} />
+            <span>انتخاب کارت</span>
+          </button>
+        ))}
       </div>
-    </div>
-  );
-};
+    </section>
+  </div>
+);
 
 interface HandSummaryModalProps {
   summary: any;
@@ -142,11 +106,7 @@ interface HandSummaryModalProps {
   players: any[];
 }
 
-export const HandSummaryModal: React.FC<HandSummaryModalProps> = ({
-  summary,
-  gameMode,
-  players,
-}) => {
+export const HandSummaryModal: React.FC<HandSummaryModalProps> = ({ summary, gameMode, players }) => {
   if (!summary) return null;
 
   const isTeam = gameMode === 'hokm_4p';
@@ -154,17 +114,12 @@ export const HandSummaryModal: React.FC<HandSummaryModalProps> = ({
   const winner = isTeam
     ? (summary.winner_team === null || summary.winner_team === undefined
         ? 'بدون برنده'
-        : `تیم ${summary.winner_team === 0 ? 'الف' : 'ب'}`)
+        : 'تیم ' + (summary.winner_team === 0 ? 'الف' : 'ب'))
     : (summary.winner_seat === null || summary.winner_seat === undefined
         ? 'بدون برنده'
         : players.find((player) => player.seat === summary.winner_seat)?.name || 'بازیکن برنده');
 
-  const kotLabel = summary.is_hakem_kot
-    ? 'حاکم‌کوت'
-    : summary.is_kot
-      ? 'کوت'
-      : null;
-
+  const kotLabel = summary.is_hakem_kot ? 'حاکم‌کوت' : summary.is_kot ? 'کوت' : null;
   const trickRows = isTeam
     ? [
         { label: 'تیم الف', value: summary.tricks_team_a ?? 0 },
@@ -176,27 +131,27 @@ export const HandSummaryModal: React.FC<HandSummaryModalProps> = ({
       }));
 
   return (
-    <div className="modal-overlay hand-summary-overlay">
-      <div className="modal-card hand-summary-card">
-        <div className="hand-summary-icon">{isDraw ? '🤝' : kotLabel ? '👑' : '🃏'}</div>
-        <div className="hand-summary-eyebrow">نتیجه دست {summary.hand_number}</div>
-        <h2 className="hand-summary-title">
-          {isDraw ? 'دست مساوی شد' : `برنده: ${winner}`}
-        </h2>
-        {kotLabel && <div className="kot-ribbon">{kotLabel}</div>}
-        <div className="hand-summary-points">
-          {summary.points_awarded ?? 0} <span>امتیاز</span>
+    <div className="game-modal-backdrop">
+      <section className="game-modal summary-modal" role="dialog" aria-modal="true" aria-labelledby="summary-title">
+        <span className="modal-kicker">HAND REPORT</span>
+        <div className="modal-emblem">{isDraw ? '🤝' : kotLabel ? '♛' : '♠'}</div>
+        <span className="summary-hand-label">نتیجه‌ی دست {summary.hand_number}</span>
+        <h2 id="summary-title">{isDraw ? 'دست مساوی شد' : 'برنده: ' + winner}</h2>
+        {kotLabel && <div className="summary-kot-ribbon">{kotLabel}</div>}
+        <div className="summary-points">
+          <b>{summary.points_awarded ?? 0}</b>
+          <span>امتیاز کسب‌شده</span>
         </div>
-        <div className="hand-summary-tricks">
+        <div className="summary-tricks">
           {trickRows.map((row) => (
-            <div key={row.label} className="hand-summary-trick-row">
+            <div className="summary-trick-row" key={row.label}>
               <span>{row.label}</span>
               <b>{row.value} دور</b>
             </div>
           ))}
         </div>
-        <div className="hand-summary-hint">دست بعدی به‌زودی شروع می‌شود…</div>
-      </div>
+        <p className="modal-footnote">دست بعدی به‌زودی آغاز می‌شود…</p>
+      </section>
     </div>
   );
 };
@@ -217,32 +172,29 @@ export const MatchOverModal: React.FC<MatchOverModalProps> = ({
   rematchRequired = 0,
   onRematch,
   onReturnLobby,
-}) => {
-  return (
-    <div className="modal-overlay">
-      <div className="modal-card">
-        <div style={{ fontSize: 48, marginBottom: 8 }}>{isWinner ? '🏆' : '💔'}</div>
-        <h2 style={{ color: isWinner ? 'var(--gold)' : 'var(--danger)', fontSize: 22, marginBottom: 8 }}>
-          {isWinner ? 'پیروزی در مسابقه!' : 'شکست در مسابقه'}
-        </h2>
-        <p style={{ color: 'var(--text-main)', fontSize: 16, fontWeight: 800, marginBottom: 20 }}>
-          نتیجه نهایی: {scoreText}
-        </p>
-
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'center' }}>
-          <button className="gold-btn" onClick={onRematch}>
-            🔄 درخواست بازی مجدد
-          </button>
-          <button className="outline-btn" onClick={onReturnLobby}>
-            🏠 خروج به لابی
-          </button>
-        </div>
-        {rematchRequired > 1 && (
-          <div className="rematch-vote-status">
-            موافقت برای بازی مجدد: {rematchVotes} از {rematchRequired}
-          </div>
-        )}
+}) => (
+  <div className="game-modal-backdrop">
+    <section className="game-modal match-modal" role="dialog" aria-modal="true" aria-labelledby="match-title">
+      <span className="modal-kicker">MATCH COMPLETE</span>
+      <div className={'modal-emblem match-emblem ' + (isWinner ? 'victory' : 'defeat')}>{isWinner ? '🏆' : '♧'}</div>
+      <h2 id="match-title">{isWinner ? 'پیروزی باشکوه!' : 'مسابقه به پایان رسید'}</h2>
+      <p className="modal-description">نتیجه‌ی نهایی مسابقه</p>
+      <div className="match-final-score" dir="ltr">{scoreText}</div>
+      <div className="match-actions">
+        <button type="button" className="button-primary" onClick={onRematch}>درخواست بازی مجدد</button>
+        <button type="button" className="button-secondary" onClick={onReturnLobby}>بازگشت به لابی</button>
       </div>
-    </div>
-  );
-};
+      {rematchRequired > 1 && (
+        <div className="rematch-progress">
+          <div className="rematch-progress-label">
+            <span>موافقت برای بازی مجدد</span>
+            <b>{rematchVotes} از {rematchRequired}</b>
+          </div>
+          <div className="rematch-progress-track">
+            <i style={{ width: Math.min(100, (rematchVotes / rematchRequired) * 100) + '%' }} />
+          </div>
+        </div>
+      )}
+    </section>
+  </div>
+);

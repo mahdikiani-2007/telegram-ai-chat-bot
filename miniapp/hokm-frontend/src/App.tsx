@@ -362,17 +362,17 @@ export const App: React.FC = () => {
   const isPlaying = Boolean(publicState && publicState.stage !== 'waiting');
 
   return (
-    <div className="hokm-container">
-      <div className="hokm-header">
-        <div className="hokm-brand">
+    <div className="hokm-app-shell flex min-h-screen w-full flex-col">
+      <header className="app-header">
+        <div className="app-brand">
           <span>👑</span>
-          <span>حکم آنلاین</span>
+          <span>حکم سلطنتی</span>
         </div>
-        <div className={`connection-pill ${isConnected ? 'connected' : 'disconnected'}`}>
+        <div className={`connection-pill ${isConnected ? 'connected' : 'disconnected'}`} role="status">
           <span className="connection-dot" />
           {isConnected ? 'متصل' : 'در حال اتصال…'}
         </div>
-      </div>
+      </header>
 
       {statusMessage && <div className="hokm-status-message" role="status">⚠️ {statusMessage}</div>}
 
