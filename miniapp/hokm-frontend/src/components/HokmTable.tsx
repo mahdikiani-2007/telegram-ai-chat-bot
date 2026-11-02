@@ -33,6 +33,11 @@ const SUITS: Record<string, { name: string; symbol: string; red: boolean }> = {
   C: { name: 'گشنیز', symbol: '♣', red: false },
 };
 const QUICK_REACTIONS = ['👏', '🔥', '👑', 'ایول!', 'دمت گرم', 'خسته نباشی'];
+const CAPTURE_CARD_STYLES = Array.from({ length: 5 }, (_, index): React.CSSProperties => ({
+  transform:
+    'translate(' + (index * 3.2) + 'px, ' + (-index * 2.1) +
+    'px) rotate(' + ((index - 2) * 3) + 'deg)',
+}));
 
 const suitLabel = (suit?: string) => {
   if (!suit) return '';
@@ -46,6 +51,24 @@ const formatTime = (timestamp: number) => {
   if (!timestamp) return '';
   return new Date(timestamp * 1000).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
 };
+
+const ChatMessage = React.memo(({
+  message,
+  mine,
+}: {
+  message: any;
+  mine: boolean;
+}) => {
+  const content = message.text || message.reaction || '';
+  return (
+    <div className={'chat-message ' + (mine ? 'mine ' : '') + (message.isReaction ? 'reaction' : '')}>
+      {!mine && <span className="chat-author">{message.name || 'بازیکن'}</span>}
+      <span className="chat-bubble">{message.isReaction ? '✦ ' : ''}{content}</span>
+      <time>{formatTime(Number(message.sent_at || 0))}</time>
+    </div>
+  );
+});
+ChatMessage.displayName = 'ChatMessage';
 
 const TurnCountdown = memo(({ deadline }: { deadline: number }) => {
   const [seconds, setSeconds] = useState(() =>
@@ -73,14 +96,20 @@ const TurnCountdown = memo(({ deadline }: { deadline: number }) => {
 TurnCountdown.displayName = 'TurnCountdown';
 
 const setGhostPosition = (element: HTMLDivElement, session: DragSession) => {
-  element.style.left = (session.x - session.grabOffsetX) + 'px';
-  element.style.top = (session.y - session.grabOffsetY) + 'px';
+  element.style.transform =
+    'translate3d(' +
+    (session.x - session.grabOffsetX) + 'px,' +
+    (session.y - session.grabOffsetY) + 'px,0) rotate(-2deg)';
+};
+
+const initializeGhost = (element: HTMLDivElement, session: DragSession) => {
   element.style.width = session.width + 'px';
   element.style.height = session.height + 'px';
   element.style.transformOrigin = session.grabOffsetX + 'px ' + session.grabOffsetY + 'px';
+  setGhostPosition(element, session);
 };
 
-export const HokmTable: React.FC<HokmTableProps> = ({
+const HokmTableComponent: React.FC<HokmTableProps> = ({
   publicState,
   privateState,
   myUserId,
@@ -107,6 +136,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
   const chatInputRef = useRef<HTMLInputElement | null>(null);
   const motionTimerRef = useRef<number | null>(null);
   const dropZoneRef = useRef<HTMLDivElement | null>(null);
+  const dropZoneRectRef = useRef<DOMRect | null>(null);
 
   const players: any[] = Array.isArray(publicState?.players) ? publicState.players.filter(Boolean) : [];
   const mySeat = Number.isInteger(privateState?.seat) ? privateState.seat : -1;
@@ -127,6 +157,8 @@ export const HokmTable: React.FC<HokmTableProps> = ({
   const resolutionUntil = Number(publicState?.trick_resolution_until || 0);
   const seq = Number(publicState?.seq || 0);
   const isMyTurn = currentTurnSeat === mySeat && !motionLocked;
+  const interactionRef = useRef({ isMyTurn, legalMoves, onPlayCard });
+  interactionRef.current = { isMyTurn, legalMoves, onPlayCard };
 
   const phase = useMemo(() => {
     const labels: Record<string, string> = {
@@ -218,7 +250,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
   useEffect(() => {
     if (!chatOpen || !chatScrollRef.current) return;
     const element = chatScrollRef.current;
-    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    element.scrollTop = element.scrollHeight;
   }, [chatMessages.length, chatOpen]);
 
   const updateDragGhost = useCallback(() => {
@@ -235,6 +267,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
 
   const clearDrag = useCallback(() => {
     dragRef.current = null;
+    dropZoneRectRef.current = null;
     if (rafRef.current !== null) {
       window.cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -255,7 +288,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
       if (moved) {
         event.preventDefault();
         if (!active.moved) setDragPreviewVisible(true);
-        const zone = dropZoneRef.current?.getBoundingClientRect();
+        const zone = dropZoneRectRef.current;
         const inside = Boolean(
           zone &&
           event.clientX >= zone.left - 22 &&
@@ -282,7 +315,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
         rafRef.current = null;
       }
 
-      const rect = dropZoneRef.current?.getBoundingClientRect();
+      const rect = dropZoneRectRef.current;
       const padding = Math.max(16, (rect?.width || 100) * 0.12);
       const droppedOnCenter = Boolean(
         moved && rect &&
@@ -293,9 +326,11 @@ export const HokmTable: React.FC<HokmTableProps> = ({
       );
 
       dragRef.current = null;
+      dropZoneRectRef.current = null;
       setDragPreviewVisible(false);
       setDropTargetActive(false);
 
+      const currentInteraction = interactionRef.current;
       if (!moved) {
         setSelectedCard(finalSession.code);
         setDragHint('');
@@ -303,12 +338,16 @@ export const HokmTable: React.FC<HokmTableProps> = ({
         return;
       }
 
-      if (droppedOnCenter && isMyTurn && legalMoves.includes(finalSession.code)) {
+      if (
+        droppedOnCenter &&
+        currentInteraction.isMyTurn &&
+        currentInteraction.legalMoves.includes(finalSession.code)
+      ) {
         setSelectedCard(null);
         setDragHint('');
         sounds.playCardSlap();
         triggerHaptic('medium');
-        onPlayCard(finalSession.code);
+        currentInteraction.onPlayCard(finalSession.code);
       } else {
         setSelectedCard(finalSession.code);
         setDragHint(droppedOnCenter ? 'این کارت در حال حاضر مجاز نیست.' : 'کارت را روی محدوده‌ی مرکزی میز رها کن.');
@@ -333,19 +372,27 @@ export const HokmTable: React.FC<HokmTableProps> = ({
       window.removeEventListener('pointercancel', onPointerCancel);
       window.removeEventListener('blur', onWindowBlur);
     };
-  }, [clearDrag, isMyTurn, legalMoves, onPlayCard, scheduleDragGhostUpdate]);
+  }, [clearDrag, scheduleDragGhostUpdate]);
 
   useEffect(() => () => {
     if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
     if (motionTimerRef.current !== null) window.clearTimeout(motionTimerRef.current);
   }, []);
 
-  const beginDrag = (event: React.PointerEvent<HTMLButtonElement>, code: string) => {
-    if (!isMyTurn || !legalMoves.includes(code) || event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
+  const beginDrag = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const button = target.closest<HTMLButtonElement>('.playing-card[data-card-code]');
+    if (!button || !event.currentTarget.contains(button)) return;
 
-    const rect = event.currentTarget.getBoundingClientRect();
+    const code = button.dataset.cardCode || '';
+    const currentInteraction = interactionRef.current;
+    if (!code || !currentInteraction.isMyTurn ||
+        !currentInteraction.legalMoves.includes(code) || event.button !== 0) return;
+
+    event.preventDefault();
+    const rect = button.getBoundingClientRect();
+    dropZoneRectRef.current = dropZoneRef.current?.getBoundingClientRect() || null;
     dragRef.current = {
       code,
       pointerId: event.pointerId,
@@ -362,14 +409,23 @@ export const HokmTable: React.FC<HokmTableProps> = ({
     setSelectedCard(null);
     setDragHint('');
     try {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      button.setPointerCapture(event.pointerId);
     } catch {}
   };
 
-  const handleCardKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, code: string) => {
+  const handleCardKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key !== 'Enter' && event.key !== ' ') return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const button = target.closest<HTMLButtonElement>('.playing-card[data-card-code]');
+    if (!button || !event.currentTarget.contains(button)) return;
+
+    const code = button.dataset.cardCode || '';
+    const currentInteraction = interactionRef.current;
+    if (!code || !currentInteraction.isMyTurn ||
+        !currentInteraction.legalMoves.includes(code)) return;
+
     event.preventDefault();
-    if (!isMyTurn || !legalMoves.includes(code)) return;
     setSelectedCard((current) => current === code ? null : code);
     triggerHaptic('light');
   };
@@ -453,8 +509,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
             key={String(team) + '-' + String(index)}
             code="BACK"
             isPlayable={false}
-            style={{ transform: 'translate(' + (index * 3.2) + 'px, ' + (-index * 2.1) +
-              'px) rotate(' + ((index - 2) * 3) + 'deg)' }}
+            style={CAPTURE_CARD_STYLES[index]}
           />
         ))}
         <span className="capture-total">{count}</span>
@@ -624,7 +679,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
             </div>
 
             <div className={'hand-scroll-area ' + (!isMyTurn ? 'not-turn' : '')}>
-              <div className="hand-cards">
+              <div className="hand-cards" onPointerDown={beginDrag} onKeyDown={handleCardKeyDown}>
                 {cards.map((code) => {
                   const playable = isMyTurn && legalMoves.includes(code);
                   return (
@@ -635,8 +690,6 @@ export const HokmTable: React.FC<HokmTableProps> = ({
                       isDisabled={!playable}
                       isSelected={selectedCard === code}
                       isDragging={dragRef.current?.code === code && dragPreviewVisible}
-                      onPointerDown={(event) => beginDrag(event, code)}
-                      onKeyDown={(event) => handleCardKeyDown(event, code)}
                     />
                   );
                 })}
@@ -674,20 +727,13 @@ export const HokmTable: React.FC<HokmTableProps> = ({
                     <span>✧</span><b>میز هنوز ساکت است</b><small>اولین پیام را بفرست و بازی را گرم کن.</small>
                   </div>
                 )}
-                {chatMessages.map((message: any, index: number) => {
-                  const mine = Number(message.user_id) === Number(myUserId);
-                  const content = message.text || message.reaction || '';
-                  return (
-                    <div
-                      key={message.id || String(message.user_id) + '-' + String(message.sent_at) + '-' + index}
-                      className={'chat-message ' + (mine ? 'mine ' : '') + (message.isReaction ? 'reaction' : '')}
-                    >
-                      {!mine && <span className="chat-author">{message.name || 'بازیکن'}</span>}
-                      <span className="chat-bubble">{message.isReaction ? '✦ ' : ''}{content}</span>
-                      <time>{formatTime(Number(message.sent_at || 0))}</time>
-                    </div>
-                  );
-                })}
+                {chatMessages.map((message: any, index: number) => (
+                  <ChatMessage
+                    key={message.id || String(message.user_id) + '-' + String(message.sent_at) + '-' + index}
+                    message={message}
+                    mine={Number(message.user_id) === Number(myUserId)}
+                  />
+                ))}
               </div>
               <div className="chat-reactions">
                 {QUICK_REACTIONS.map((reaction) => (
@@ -715,7 +761,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
           className="drag-preview-layer"
           ref={(element) => {
             dragGhostRef.current = element;
-            if (element && dragRef.current) setGhostPosition(element, dragRef.current);
+            if (element && dragRef.current) initializeGhost(element, dragRef.current);
           }}
           aria-hidden="true"
         >
@@ -726,3 +772,5 @@ export const HokmTable: React.FC<HokmTableProps> = ({
     </div>
   );
 };
+
+export const HokmTable = React.memo(HokmTableComponent);

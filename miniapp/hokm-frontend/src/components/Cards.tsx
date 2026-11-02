@@ -91,7 +91,7 @@ const CourtArt: React.FC<{ rank: string; symbol: string; red: boolean }> = ({ ra
   );
 };
 
-export const PlayingCard: React.FC<CardProps> = ({
+const PlayingCardComponent: React.FC<CardProps> = ({
   code,
   isPlayable = false,
   isSelected = false,
@@ -137,6 +137,7 @@ export const PlayingCard: React.FC<CardProps> = ({
       onPointerDown={isPlayable && !isDisabled ? onPointerDown : undefined}
       onKeyDown={onKeyDown}
       disabled={isDisabled || !isPlayable}
+      data-card-code={code}
       aria-label={rank + ' ' + suitInfo.name}
       aria-pressed={isSelected}
       tabIndex={isPlayable && !isDisabled ? 0 : -1}
@@ -177,3 +178,5 @@ export const PlayingCard: React.FC<CardProps> = ({
     </button>
   );
 };
+
+export const PlayingCard = React.memo(PlayingCardComponent);

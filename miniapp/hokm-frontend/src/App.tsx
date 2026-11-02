@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { HokmLobby } from './components/HokmLobby';
 import { HokmTable } from './components/HokmTable';
 import {
@@ -11,6 +11,78 @@ import {
 import './styles/hokm.css';
 
 type AuthContext = { initData: string; devUser?: number };
+
+const PerformanceMonitor: React.FC = () => {
+  const [enabled] = useState(() =>
+    typeof window !== 'undefined' &&
+    new URLSearchParams(window.location.search).get('perf') === '1',
+  );
+  const [stats, setStats] = useState({ fps: 0, p95: 0, longTasks: 0 });
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    let raf = 0;
+    let lastFrame = 0;
+    let sampleStart = 0;
+    let frameCount = 0;
+    let frameTimes: number[] = [];
+    let longTasks = 0;
+    let observer: PerformanceObserver | null = null;
+
+    try {
+      observer = new PerformanceObserver((list) => {
+        longTasks += list.getEntries().length;
+      });
+      observer.observe({ entryTypes: ['longtask'] });
+    } catch {
+      observer = null;
+    }
+
+    const sample = (timestamp: number) => {
+      if (!sampleStart) sampleStart = timestamp;
+      if (lastFrame) {
+        const delta = timestamp - lastFrame;
+        frameTimes.push(delta);
+        frameCount += 1;
+      }
+      lastFrame = timestamp;
+
+      const elapsed = timestamp - sampleStart;
+      if (elapsed >= 1000) {
+        const ordered = frameTimes.slice().sort((a, b) => a - b);
+        const p95 = ordered.length
+          ? ordered[Math.min(ordered.length - 1, Math.floor(ordered.length * 0.95))]
+          : 0;
+        setStats({
+          fps: Math.round((frameCount * 1000) / elapsed),
+          p95: Math.round(p95 * 10) / 10,
+          longTasks,
+        });
+        sampleStart = timestamp;
+        frameCount = 0;
+        frameTimes = [];
+        longTasks = 0;
+      }
+      raf = window.requestAnimationFrame(sample);
+    };
+
+    raf = window.requestAnimationFrame(sample);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      observer?.disconnect();
+    };
+  }, [enabled]);
+
+  if (!enabled) return null;
+  return (
+    <div className="performance-hud" aria-label="Performance monitor">
+      <span><b>{stats.fps}</b><small>FPS</small></span>
+      <span><b>{stats.p95} ms</b><small>Frame p95</small></span>
+      <span><b>{stats.longTasks}</b><small>Long tasks/s</small></span>
+    </div>
+  );
+};
 
 export const App: React.FC = () => {
   const [user, setUser] = useState<any>(null);
@@ -345,6 +417,21 @@ export const App: React.FC = () => {
     if (activeRoomId && cleanText) sendWs('hokm.chat.message', { room_id: activeRoomId, text: cleanText });
   };
 
+  const tableActionsRef = useRef({
+    play: handlePlayCard,
+    chat: handleSendChat,
+  });
+  tableActionsRef.current = {
+    play: handlePlayCard,
+    chat: handleSendChat,
+  };
+  const stablePlayCard = useCallback((card: string) => {
+    tableActionsRef.current.play(card);
+  }, []);
+  const stableSendChat = useCallback((message: string) => {
+    tableActionsRef.current.chat(message);
+  }, []);
+
   const handleLeaveRoom = () => {
     if (activeRoomId) {
       sendWs('hokm.room.leave', { room_id: activeRoomId });
@@ -393,8 +480,8 @@ export const App: React.FC = () => {
           publicState={publicState}
           privateState={privateState}
           myUserId={user?.user_id}
-          onPlayCard={handlePlayCard}
-          onSendChat={handleSendChat}
+          onPlayCard={stablePlayCard}
+          onSendChat={stableSendChat}
           chatMessages={chatMessages}
         />
       )}
@@ -446,6 +533,7 @@ export const App: React.FC = () => {
       )}
 
       {rematchMessage && <div className="rematch-toast">{rematchMessage}</div>}
+      <PerformanceMonitor />
     </div>
   );
 };
