@@ -498,6 +498,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
               top: dragSession.y - dragSession.grabOffsetY,
               width: dragSession.width,
               height: dragSession.height,
+              transformOrigin: dragSession.grabOffsetX + 'px ' + dragSession.grabOffsetY + 'px',
             }}
           >
             <PlayingCard code={dragSession.code} isPlayable={false} />
