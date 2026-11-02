@@ -681,7 +681,7 @@ select:focus-visible {
 .button-primary:disabled,
 .button-secondary:disabled {
   opacity: .42;
-  filter: grayscale(.7);
+  opacity: .6;
   transform: none;
   box-shadow: none;
 }
@@ -1100,7 +1100,7 @@ select:focus-visible {
 .turn-chip.your-turn .turn-indicator {
   background: #70d99c;
   box-shadow: 0 0 9px rgba(112, 217, 156, .74);
-  animation: active-pulse 1.8s ease-in-out infinite;
+  animation: none;
 }
 
 .turn-chip.is-resolving {
@@ -1438,7 +1438,7 @@ select:focus-visible {
   color: #f0ce83;
   font-family: Georgia, serif;
   font-size: 14px;
-  filter: drop-shadow(0 2px 2px rgba(0, 0, 0, .7));
+  text-shadow: 0 2px 2px rgba(0, 0, 0, .7);
 }
 
 .player-presence {
@@ -1654,12 +1654,7 @@ select:focus-visible {
   inset: -3%;
   border: 1px solid rgba(248, 224, 165, .75);
   border-radius: 50%;
-  animation: drop-halo .85s ease-out infinite;
-}
-
-@keyframes drop-halo {
-  0% { opacity: .72; transform: scale(.88); }
-  100% { opacity: 0; transform: scale(1.23); }
+  opacity: .42;
 }
 
 .trick-empty-mark {
@@ -2257,7 +2252,7 @@ select:focus-visible {
 
 .chat-input-row button:disabled {
   opacity: .42;
-  filter: grayscale(.8);
+  opacity: .5;
 }
 
 /* Physical cards */
@@ -2307,7 +2302,7 @@ select:focus-visible {
 
 .playing-card.disabled {
   opacity: .42;
-  filter: grayscale(.72) brightness(.83);
+  opacity: .52;
 }
 
 .playing-card:disabled {
@@ -3529,3 +3524,49 @@ select:focus-visible {
     max-width: 76px;
   }
 }
+
+/* Optional on-device performance telemetry. Enable with ?perf=1. */
+.performance-hud {
+  position: fixed;
+  left: max(8px, env(safe-area-inset-left));
+  bottom: max(8px, env(safe-area-inset-bottom));
+  z-index: 12000;
+  display: grid;
+  grid-template-columns: repeat(3, auto);
+  gap: 7px;
+  padding: 7px 9px;
+  border: 1px solid rgba(230, 210, 160, .25);
+  border-radius: 10px;
+  color: #e9e3d3;
+  background: rgba(4, 19, 13, .94);
+  font: 10px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.performance-hud span {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 43px;
+}
+
+.performance-hud b {
+  color: #f0d394;
+  font-size: 12px;
+}
+
+.performance-hud small {
+  color: #8e998d;
+  font-size: 7px;
+  font-family: "Vazirmatn", sans-serif;
+}
+
+@media (max-width: 680px) {
+  .performance-hud {
+    gap: 5px;
+    padding: 5px 7px;
+    opacity: .88;
+  }
+}
+
