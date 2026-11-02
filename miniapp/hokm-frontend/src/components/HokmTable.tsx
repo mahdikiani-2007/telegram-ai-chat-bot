@@ -250,7 +250,7 @@ const HokmTableComponent: React.FC<HokmTableProps> = ({
   useEffect(() => {
     if (!chatOpen || !chatScrollRef.current) return;
     const element = chatScrollRef.current;
-    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
+    element.scrollTop = element.scrollHeight;
   }, [chatMessages.length, chatOpen]);
 
   const updateDragGhost = useCallback(() => {
