@@ -73,11 +73,17 @@ const TurnCountdown = memo(({ deadline }: { deadline: number }) => {
 TurnCountdown.displayName = 'TurnCountdown';
 
 const setGhostPosition = (element: HTMLDivElement, session: DragSession) => {
-  element.style.left = (session.x - session.grabOffsetX) + 'px';
-  element.style.top = (session.y - session.grabOffsetY) + 'px';
+  element.style.transform =
+    'translate3d(' +
+    (session.x - session.grabOffsetX) + 'px,' +
+    (session.y - session.grabOffsetY) + 'px,0) rotate(-2deg)';
+};
+
+const initializeGhost = (element: HTMLDivElement, session: DragSession) => {
   element.style.width = session.width + 'px';
   element.style.height = session.height + 'px';
   element.style.transformOrigin = session.grabOffsetX + 'px ' + session.grabOffsetY + 'px';
+  setGhostPosition(element, session);
 };
 
 export const HokmTable: React.FC<HokmTableProps> = ({
@@ -715,7 +721,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
           className="drag-preview-layer"
           ref={(element) => {
             dragGhostRef.current = element;
-            if (element && dragRef.current) setGhostPosition(element, dragRef.current);
+            if (element && dragRef.current) initializeGhost(element, dragRef.current);
           }}
           aria-hidden="true"
         >
