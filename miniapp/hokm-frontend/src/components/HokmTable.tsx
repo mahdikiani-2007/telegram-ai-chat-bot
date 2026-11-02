@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { PlayingCard } from './Cards';
-import { triggerHaptic, sounds } from './AudioHaptics';
+import { sounds, triggerHaptic } from './AudioHaptics';
 
 interface HokmTableProps {
   publicState: any;
@@ -26,26 +26,58 @@ interface DragSession {
   moved: boolean;
 }
 
-const SUIT_NAMES: Record<string, string> = {
-  S: 'پیک ♠',
-  H: 'دل ♥',
-  D: 'خشت ♦',
-  C: 'گشنیز ♣',
+const SUITS: Record<string, { name: string; symbol: string; red: boolean }> = {
+  S: { name: 'پیک', symbol: '♠', red: false },
+  H: { name: 'دل', symbol: '♥', red: true },
+  D: { name: 'خشت', symbol: '♦', red: true },
+  C: { name: 'گشنیز', symbol: '♣', red: false },
 };
 const QUICK_REACTIONS = ['👏', '🔥', '👑', 'ایول!', 'دمت گرم', 'خسته نباشی'];
 
-const formatCard = (code: string) => {
-  const rank = code.slice(0, -1);
-  const suit = SUIT_NAMES[code.slice(-1)] || '';
-  return rank + ' ' + suit;
+const suitLabel = (suit?: string) => {
+  if (!suit) return '';
+  const info = SUITS[suit];
+  return info ? info.name + ' ' + info.symbol : suit;
 };
 
-const formatClock = (timestamp: number) => {
+const formatCard = (code: string) => code.slice(0, -1) + ' ' + suitLabel(code.slice(-1));
+
+const formatTime = (timestamp: number) => {
   if (!timestamp) return '';
-  return new Date(timestamp * 1000).toLocaleTimeString('fa-IR', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
+  return new Date(timestamp * 1000).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
+};
+
+const TurnCountdown = memo(({ deadline }: { deadline: number }) => {
+  const [seconds, setSeconds] = useState(() =>
+    deadline > 0 ? Math.max(0, Math.ceil(deadline - Date.now() / 1000)) : 0,
+  );
+
+  useEffect(() => {
+    if (!deadline) {
+      setSeconds(0);
+      return;
+    }
+    const update = () => setSeconds(Math.max(0, Math.ceil(deadline - Date.now() / 1000)));
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [deadline]);
+
+  return (
+    <span className={'turn-countdown ' + (seconds > 0 && seconds <= 5 ? 'urgent' : '')}>
+      <span className="turn-countdown-dot" />
+      {seconds > 0 ? seconds + ' ثانیه' : 'بدون محدودیت'}
+    </span>
+  );
+});
+TurnCountdown.displayName = 'TurnCountdown';
+
+const setGhostPosition = (element: HTMLDivElement, session: DragSession) => {
+  element.style.left = (session.x - session.grabOffsetX) + 'px';
+  element.style.top = (session.y - session.grabOffsetY) + 'px';
+  element.style.width = session.width + 'px';
+  element.style.height = session.height + 'px';
+  element.style.transformOrigin = session.grabOffsetX + 'px ' + session.grabOffsetY + 'px';
 };
 
 export const HokmTable: React.FC<HokmTableProps> = ({
@@ -59,508 +91,638 @@ export const HokmTable: React.FC<HokmTableProps> = ({
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const [resolvedTrick, setResolvedTrick] = useState<any[]>([]);
   const [resolvingWinner, setResolvingWinner] = useState<number | null>(null);
-  const [chatOpen, setChatOpen] = useState(true);
+  const [motionLocked, setMotionLocked] = useState(false);
   const [chatDraft, setChatDraft] = useState('');
-  const [dragSession, setDragSession] = useState<DragSession | null>(null);
+  const [chatOpen, setChatOpen] = useState(true);
+  const [dragPreviewVisible, setDragPreviewVisible] = useState(false);
   const [dragHint, setDragHint] = useState('');
-  const lastCompletedKeyRef = useRef<string | null>(null);
-  const previousTrickLengthRef = useRef(0);
-  const dragRef = useRef<DragSession | null>(null);
-  const chatScrollRef = useRef<HTMLDivElement | null>(null);
-  const [now, setNow] = useState(() => Date.now() / 1000);
+  const [dropTargetActive, setDropTargetActive] = useState(false);
 
-  const players: any[] = publicState?.players || [];
-  const mySeat = privateState?.seat ?? -1;
+  const previousTrickLengthRef = useRef(0);
+  const lastCompletedKeyRef = useRef<string | null>(null);
+  const dragRef = useRef<DragSession | null>(null);
+  const dragGhostRef = useRef<HTMLDivElement | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const chatInputRef = useRef<HTMLInputElement | null>(null);
+  const motionTimerRef = useRef<number | null>(null);
+  const dropZoneRef = useRef<HTMLDivElement | null>(null);
+
+  const players: any[] = Array.isArray(publicState?.players) ? publicState.players.filter(Boolean) : [];
+  const mySeat = Number.isInteger(privateState?.seat) ? privateState.seat : -1;
   const layoutSeat = mySeat >= 0 ? mySeat : 0;
-  const myCards: string[] = privateState?.cards || [];
-  const legalMoves: string[] = privateState?.legal_moves || [];
-  const currentTrick: any[] = publicState?.current_trick || [];
-  const lastCompleted = publicState?.last_completed_trick || null;
-  const trumpSuit = publicState?.trump_suit;
-  const currentTurnSeat = publicState?.current_turn_seat;
-  const isFourPlayer = publicState?.game_mode === 'hokm_4p';
-  const totalSeats = Math.max(2, Number(players.length) || (isFourPlayer ? 4 : 3));
   const myPlayer = players.find((player) => player?.seat === mySeat);
   const myTeam = myPlayer?.team;
+  const viewerTeam = myTeam === 1 ? 1 : 0;
+  const gameMode = String(publicState?.game_mode || 'hokm_4p');
+  const isFourPlayer = gameMode === 'hokm_4p';
+  const totalSeats = isFourPlayer ? 4 : gameMode === 'hokm_2p' ? 2 : 3;
+  const cards: string[] = Array.isArray(privateState?.cards) ? privateState.cards : [];
+  const legalMoves: string[] = Array.isArray(privateState?.legal_moves) ? privateState.legal_moves : [];
+  const currentTrick: any[] = Array.isArray(publicState?.current_trick) ? publicState.current_trick : [];
+  const lastCompleted = publicState?.last_completed_trick || null;
+  const trumpSuit = publicState?.trump_suit as string | undefined;
+  const currentTurnSeat = publicState?.current_turn_seat;
   const turnDeadline = Number(publicState?.action_deadline || 0);
-  const trickResolutionUntil = Number(publicState?.trick_resolution_until || 0);
+  const resolutionUntil = Number(publicState?.trick_resolution_until || 0);
   const seq = Number(publicState?.seq || 0);
-  const isMotionLocked = now < trickResolutionUntil;
-  const isMyTurn = currentTurnSeat === mySeat && !isMotionLocked;
+  const isMyTurn = currentTurnSeat === mySeat && !motionLocked;
 
-  const phaseLabel = useMemo(() => {
+  const phase = useMemo(() => {
     const labels: Record<string, string> = {
       waiting: 'اتاق انتظار',
-      ceremony: 'مراسم تعیین حاکم',
-      trump_selection: 'انتخاب خال حکم',
+      ceremony: 'تعیین حاکم',
+      trump_selection: 'انتخاب حکم',
       two_player_draft: 'انتخاب کارت',
-      dealing: 'پخش کارت‌ها',
-      playing: 'در حال بازی',
+      dealing: 'پخش کارت',
+      playing: 'در جریان بازی',
       hand_ended: 'پایان دست',
       match_ended: 'پایان مسابقه',
     };
-    return labels[publicState?.stage] || 'در حال آماده‌سازی';
+    return labels[publicState?.stage] || 'آماده‌سازی میز';
   }, [publicState?.stage]);
 
-  const teamTricks = (team: number) => players.reduce(
-    (sum, player) => sum + (player?.team === team ? Number(player?.tricks_won || 0) : 0),
+  const teamATricks = players.reduce(
+    (sum, player) => sum + (player?.team === 0 ? Number(player.tricks_won || 0) : 0),
     0,
   );
-  const teamATricks = teamTricks(0);
-  const teamBTricks = teamTricks(1);
+  const teamBTricks = players.reduce(
+    (sum, player) => sum + (player?.team === 1 ? Number(player.tricks_won || 0) : 0),
+    0,
+  );
   const resolvingWinnerTeam = resolvingWinner === null
     ? null
     : players.find((player) => player?.seat === resolvingWinner)?.team;
   const displayedTeamATricks = Math.max(0, teamATricks - (resolvedTrick.length && resolvingWinnerTeam === 0 ? 1 : 0));
   const displayedTeamBTricks = Math.max(0, teamBTricks - (resolvedTrick.length && resolvingWinnerTeam === 1 ? 1 : 0));
+  const teamScoreA = Number(publicState?.team_a_match_points || 0);
+  const teamScoreB = Number(publicState?.team_b_match_points || 0);
+  const ownTricks = viewerTeam === 0 ? displayedTeamATricks : displayedTeamBTricks;
+  const rivalTricks = viewerTeam === 0 ? displayedTeamBTricks : displayedTeamATricks;
+
+  const relativePlayer = useCallback((offset: number) => {
+    const seat = (layoutSeat + offset + totalSeats) % totalSeats;
+    return players.find((player) => player?.seat === seat);
+  }, [layoutSeat, players, totalSeats]);
 
   useEffect(() => {
     setSelectedCard(null);
     setDragHint('');
-  }, [seq, currentTurnSeat, currentTrick.length, myCards.length]);
+  }, [seq, currentTurnSeat, cards.length]);
+
+  useEffect(() => {
+    if (motionTimerRef.current !== null) {
+      window.clearTimeout(motionTimerRef.current);
+      motionTimerRef.current = null;
+    }
+    const remaining = resolutionUntil * 1000 - Date.now();
+    if (remaining <= 0) {
+      setMotionLocked(false);
+      return;
+    }
+    setMotionLocked(true);
+    motionTimerRef.current = window.setTimeout(() => {
+      setMotionLocked(false);
+      motionTimerRef.current = null;
+    }, remaining);
+    return () => {
+      if (motionTimerRef.current !== null) {
+        window.clearTimeout(motionTimerRef.current);
+        motionTimerRef.current = null;
+      }
+    };
+  }, [resolutionUntil]);
 
   useEffect(() => {
     const completedNow = previousTrickLengthRef.current > 0 && currentTrick.length === 0;
     previousTrickLengthRef.current = currentTrick.length;
     if (!completedNow || !lastCompleted?.cards?.length) return;
 
-    const key = String(publicState?.hand_number || 0) + ':' + lastCompleted.cards
-      .map((card: any) => String(card.seat) + '-' + card.card).join('|');
+    const key = String(publicState?.hand_number || 0) + ':' +
+      lastCompleted.cards.map((card: any) => String(card.seat) + '-' + card.card).join('|');
     if (lastCompletedKeyRef.current === key) return;
+
     lastCompletedKeyRef.current = key;
     setResolvedTrick(lastCompleted.cards);
     setResolvingWinner(lastCompleted.winner_seat ?? null);
     sounds.playTrickWin();
     triggerHaptic('success');
-    const timeout = window.setTimeout(() => {
+
+    const timer = window.setTimeout(() => {
       setResolvedTrick([]);
       setResolvingWinner(null);
     }, 2320);
-    return () => window.clearTimeout(timeout);
+    return () => window.clearTimeout(timer);
   }, [seq, currentTrick.length, lastCompleted, publicState?.hand_number]);
 
   useEffect(() => {
-    if (!turnDeadline && !trickResolutionUntil) return;
-    const interval = window.setInterval(() => setNow(Date.now() / 1000), 250);
-    return () => window.clearInterval(interval);
-  }, [turnDeadline, trickResolutionUntil]);
-
-  useEffect(() => {
     if (!chatOpen || !chatScrollRef.current) return;
-    chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    const element = chatScrollRef.current;
+    element.scrollTo({ top: element.scrollHeight, behavior: 'smooth' });
   }, [chatMessages.length, chatOpen]);
+
+  const updateDragGhost = useCallback(() => {
+    rafRef.current = null;
+    const session = dragRef.current;
+    const ghost = dragGhostRef.current;
+    if (session?.moved && ghost) setGhostPosition(ghost, session);
+  }, []);
+
+  const scheduleDragGhostUpdate = useCallback(() => {
+    if (rafRef.current !== null) return;
+    rafRef.current = window.requestAnimationFrame(updateDragGhost);
+  }, [updateDragGhost]);
+
+  const clearDrag = useCallback(() => {
+    dragRef.current = null;
+    if (rafRef.current !== null) {
+      window.cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    setDragPreviewVisible(false);
+    setDropTargetActive(false);
+  }, []);
 
   useEffect(() => {
     const onPointerMove = (event: PointerEvent) => {
       const active = dragRef.current;
-      if (!active || event.pointerId !== active.pointerId) return;
-      event.preventDefault();
-      const moved = active.moved || Math.hypot(event.clientX - active.startX, event.clientY - active.startY) > 9;
-      const next = { ...active, x: event.clientX, y: event.clientY, moved };
-      dragRef.current = next;
-      setDragSession(next);
+      if (!active || active.pointerId !== event.pointerId) return;
+
+      const distance = Math.hypot(event.clientX - active.startX, event.clientY - active.startY);
+      const moved = active.moved || distance >= 7;
+      dragRef.current = { ...active, x: event.clientX, y: event.clientY, moved };
+
+      if (moved) {
+        event.preventDefault();
+        if (!active.moved) setDragPreviewVisible(true);
+        const zone = dropZoneRef.current?.getBoundingClientRect();
+        const inside = Boolean(
+          zone &&
+          event.clientX >= zone.left - 22 &&
+          event.clientX <= zone.right + 22 &&
+          event.clientY >= zone.top - 22 &&
+          event.clientY <= zone.bottom + 22,
+        );
+        setDropTargetActive((current) => current !== inside ? inside : current);
+        scheduleDragGhostUpdate();
+      }
     };
 
     const onPointerUp = (event: PointerEvent) => {
       const active = dragRef.current;
-      if (!active || event.pointerId !== active.pointerId) return;
-      const moved = active.moved || Math.hypot(event.clientX - active.startX, event.clientY - active.startY) > 9;
-      dragRef.current = null;
-      setDragSession(null);
+      if (!active || active.pointerId !== event.pointerId) return;
 
-      if (!moved) {
-        setDragHint('');
-        if (isMyTurn && legalMoves.includes(active.code)) {
-          setSelectedCard(active.code);
-          triggerHaptic('light');
-        }
-        return;
+      const distance = Math.hypot(event.clientX - active.startX, event.clientY - active.startY);
+      const moved = active.moved || distance >= 7;
+      const finalSession = { ...active, x: event.clientX, y: event.clientY, moved };
+      dragRef.current = finalSession;
+
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
 
-      const center = document.querySelector('.trick-center');
-      const rect = center?.getBoundingClientRect();
-      const padding = 54;
-      const droppedOnTable = Boolean(
-        rect &&
+      const rect = dropZoneRef.current?.getBoundingClientRect();
+      const padding = Math.max(16, (rect?.width || 100) * 0.12);
+      const droppedOnCenter = Boolean(
+        moved && rect &&
         event.clientX >= rect.left - padding &&
         event.clientX <= rect.right + padding &&
         event.clientY >= rect.top - padding &&
-        event.clientY <= rect.bottom + padding
+        event.clientY <= rect.bottom + padding,
       );
 
-      if (droppedOnTable && isMyTurn && legalMoves.includes(active.code)) {
+      dragRef.current = null;
+      setDragPreviewVisible(false);
+      setDropTargetActive(false);
+
+      if (!moved) {
+        setSelectedCard(finalSession.code);
+        setDragHint('');
+        triggerHaptic('light');
+        return;
+      }
+
+      if (droppedOnCenter && isMyTurn && legalMoves.includes(finalSession.code)) {
         setSelectedCard(null);
         setDragHint('');
         sounds.playCardSlap();
         triggerHaptic('medium');
-        onPlayCard(active.code);
+        onPlayCard(finalSession.code);
       } else {
-        setSelectedCard(active.code);
-        setDragHint('برای انداختن کارت، آن را روی مرکز میز رها کن.');
+        setSelectedCard(finalSession.code);
+        setDragHint(droppedOnCenter ? 'این کارت در حال حاضر مجاز نیست.' : 'کارت را روی محدوده‌ی مرکزی میز رها کن.');
         triggerHaptic('light');
       }
     };
 
     const onPointerCancel = (event: PointerEvent) => {
-      if (!dragRef.current || event.pointerId !== dragRef.current.pointerId) return;
-      dragRef.current = null;
-      setDragSession(null);
+      if (dragRef.current?.pointerId === event.pointerId) clearDrag();
+    };
+    const onWindowBlur = () => {
+      if (dragRef.current) clearDrag();
     };
 
     window.addEventListener('pointermove', onPointerMove, { passive: false });
     window.addEventListener('pointerup', onPointerUp);
     window.addEventListener('pointercancel', onPointerCancel);
+    window.addEventListener('blur', onWindowBlur);
     return () => {
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
       window.removeEventListener('pointercancel', onPointerCancel);
+      window.removeEventListener('blur', onWindowBlur);
     };
-  }, [isMyTurn, legalMoves, onPlayCard]);
+  }, [clearDrag, isMyTurn, legalMoves, onPlayCard, scheduleDragGhostUpdate]);
 
-  const getRelativePlayer = (offset: number) => {
-    const seatIdx = (layoutSeat + offset) % totalSeats;
-    return players.find((player) => player?.seat === seatIdx);
-  };
+  useEffect(() => () => {
+    if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
+    if (motionTimerRef.current !== null) window.clearTimeout(motionTimerRef.current);
+  }, []);
 
-  const startCardDrag = (event: React.PointerEvent<HTMLDivElement>, cardCode: string) => {
-    if (!isMyTurn || !legalMoves.includes(cardCode)) return;
+  const beginDrag = (event: React.PointerEvent<HTMLButtonElement>, code: string) => {
+    if (!isMyTurn || !legalMoves.includes(code) || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    const cardRect = event.currentTarget.getBoundingClientRect();
-    const initial: DragSession = {
-      code: cardCode,
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    dragRef.current = {
+      code,
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
       x: event.clientX,
       y: event.clientY,
-      grabOffsetX: event.clientX - cardRect.left,
-      grabOffsetY: event.clientY - cardRect.top,
-      width: cardRect.width,
-      height: cardRect.height,
+      grabOffsetX: event.clientX - rect.left,
+      grabOffsetY: event.clientY - rect.top,
+      width: rect.width,
+      height: rect.height,
       moved: false,
     };
-    dragRef.current = initial;
-    setDragSession(initial);
+    setSelectedCard(null);
     setDragHint('');
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {}
   };
 
-  const submitSelectedCard = () => {
+  const handleCardKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, code: string) => {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    if (!isMyTurn || !legalMoves.includes(code)) return;
+    setSelectedCard((current) => current === code ? null : code);
+    triggerHaptic('light');
+  };
+
+  const playSelectedCard = () => {
     if (!selectedCard || !isMyTurn || !legalMoves.includes(selectedCard)) return;
-    const cardToPlay = selectedCard;
+    const code = selectedCard;
     setSelectedCard(null);
+    setDragHint('');
     sounds.playCardSlap();
     triggerHaptic('medium');
-    onPlayCard(cardToPlay);
+    onPlayCard(code);
   };
 
-  const getTrickCardTransform = (seat: number) => {
-    const relOffset = (seat - layoutSeat + totalSeats) % totalSeats;
+  const relativeOffset = (seat: number) => (seat - layoutSeat + totalSeats) % totalSeats;
+  const trickCardTransform = (seat: number) => {
+    const offset = relativeOffset(seat);
     if (totalSeats === 4) {
-      if (relOffset === 0) return 'translateY(38px) rotate(-4deg)';
-      if (relOffset === 1) return 'translateX(42px) rotate(4deg)';
-      if (relOffset === 2) return 'translateY(-38px) rotate(4deg)';
-      return 'translateX(-42px) rotate(-4deg)';
+      if (offset === 0) return 'translateY(35px) rotate(-4deg)';
+      if (offset === 1) return 'translateX(43px) rotate(4deg)';
+      if (offset === 2) return 'translateY(-35px) rotate(4deg)';
+      return 'translateX(-43px) rotate(-4deg)';
     }
     if (totalSeats === 3) {
-      if (relOffset === 0) return 'translateY(34px)';
-      if (relOffset === 1) return 'translate(38px, -25px)';
-      return 'translate(-38px, -25px)';
+      if (offset === 0) return 'translateY(32px)';
+      if (offset === 1) return 'translate(40px, -25px)';
+      return 'translate(-40px, -25px)';
     }
-    return relOffset === 0 ? 'translateY(32px)' : 'translateY(-32px)';
+    return offset === 0 ? 'translateY(28px)' : 'translateY(-28px)';
   };
 
-  const viewerTeam = myTeam === 1 ? 1 : 0;
-
-  const getCollectVector = (seat: number): [number, number] => {
+  const collectVector = (winnerSeat: number): [number, number] => {
     if (totalSeats === 4) {
-      const winnerTeam = players.find((player) => player?.seat === seat)?.team;
-      return winnerTeam === viewerTeam ? [-145, 135] : [145, -135];
+      const team = players.find((player) => player?.seat === winnerSeat)?.team;
+      return team === viewerTeam ? [-170, 130] : [170, -130];
     }
-    const relOffset = (seat - layoutSeat + totalSeats) % totalSeats;
-    return relOffset === 1 ? [95, -110] : relOffset === 2 ? [-95, -110] : [0, 130];
+    const offset = relativeOffset(winnerSeat);
+    return offset === 1 ? [100, -100] : offset === 2 ? [-100, -100] : [0, 125];
   };
 
-  const renderPlayerPod = (player: any) => {
+  const renderPlayer = (player: any, position: string) => {
     if (!player) return null;
-    const isHakem = publicState?.hakem_seat === player.seat;
-    const isActive = currentTurnSeat === player.seat;
-    const wonLastTrick = resolvedTrick.length > 0 && resolvingWinner === player.seat;
-    const remaining = Number(player.cards_remaining ?? 0);
+    const active = currentTurnSeat === player.seat;
+    const hakem = publicState?.hakem_seat === player.seat;
+    const winner = resolvedTrick.length > 0 && resolvingWinner === player.seat;
+    const ownTeam = isFourPlayer && player.team === myTeam;
 
     return (
-      <div
-        className={'player-pod royal-player-pod ' + (isActive ? 'active ' : '') +
-          (wonLastTrick ? 'won-trick ' : '') + (player.team === myTeam && isFourPlayer ? 'friendly-pod' : '')}
-        key={player.seat}
+      <div key={player.seat} className={'table-player ' + position +
+        (active ? ' is-active' : '') + (winner ? ' is-winner' : '') + (ownTeam ? ' is-friendly' : '')}
       >
-        <div className="avatar-ring">
-          {player.is_ai ? '🤖' : '👤'}
-          {isHakem && <span className="crown-badge">♛</span>}
-          <span className={'presence-dot ' + (player.is_connected === false ? 'offline' : '')} />
+        <div className="player-avatar">
+          <span>{player.is_ai ? '🤖' : '👤'}</span>
+          {hakem && <span className="player-crown">♛</span>}
+          <span className={'player-presence ' + (player.is_connected === false ? 'offline' : '')} />
         </div>
-        <span className="player-name">{player.name}</span>
-        <span className="player-tricks-count">
-          {isFourPlayer ? remaining + ' برگ' : 'دست: ' + (player.tricks_won ?? 0) + ' · ' + remaining + ' برگ'}
-        </span>
-        {isHakem && <span className="player-role-label">حاکم</span>}
-        {wonLastTrick && <span className="trick-winner-label">دست برای این تیم</span>}
+        <div className="player-meta">
+          <b className="player-name">{player.name}</b>
+          <span className="player-detail">
+            {isFourPlayer
+              ? Number(player.cards_remaining || 0) + ' کارت باقی'
+              : Number(player.tricks_won || 0) + ' دور · ' + Number(player.cards_remaining || 0) + ' کارت'}
+          </span>
+        </div>
+        {hakem && <span className="player-hakem-tag">حاکم</span>}
+        {winner && <span className="player-win-tag">برنده‌ی دور</span>}
       </div>
     );
   };
 
-  const renderScore = () => {
-    if (isFourPlayer) {
-      if (myTeam === 0 || myTeam === 1) {
-        const mine = myTeam === 1 ? publicState?.team_b_match_points : publicState?.team_a_match_points;
-        const theirs = myTeam === 1 ? publicState?.team_a_match_points : publicState?.team_b_match_points;
-        return (
-          <span>
-            تیم شما: <b className="my-team-score">{mine ?? 0}</b>
-            <span className="score-separator"> — </span>
-            حریف: <b className="opponent-team-score">{theirs ?? 0}</b>
-          </span>
-        );
-      }
-      return (
-        <span>
-          تیم الف: <b className="my-team-score">{publicState?.team_a_match_points ?? 0}</b>
-          <span className="score-separator"> — </span>
-          تیم ب: <b className="opponent-team-score">{publicState?.team_b_match_points ?? 0}</b>
-        </span>
-      );
-    }
-    return (
-      <div className="individual-score-list">
-        {players.map((player) => (
-          <span key={player.seat} className={player.seat === mySeat ? 'individual-score mine' : 'individual-score'}>
-            {player.name}: <b>{player.match_score ?? 0}</b>
-          </span>
-        ))}
-      </div>
-    );
-  };
-
-  const ownTricks = viewerTeam === 1 ? displayedTeamBTricks : displayedTeamATricks;
-  const rivalTricks = viewerTeam === 1 ? displayedTeamATricks : displayedTeamBTricks;
-  const myLabel = myTeam === null || myTeam === undefined ? 'تیم الف' : 'تیم شما';
-  const rivalLabel = myTeam === null || myTeam === undefined ? 'تیم ب' : 'حریف';
-
-  const renderCapturePile = (team: number, count: number, label: string, position: 'top' | 'bottom') => (
+  const renderCapturePile = (team: number, count: number, position: 'top' | 'bottom') => (
     <div
-      className={'team-capture-pile ' + position + ' ' + (team === viewerTeam ? 'own-team' : 'rival-team') +
-        (team === viewerTeam ? ' pile-own' : ' pile-rival') +
-        (resolvedTrick.length && resolvingWinnerTeam === team ? ' pile-receiving' : '')}
-      aria-label={label + ': ' + count + ' دست جمع‌شده'}
+      className={'capture-pile ' + position + ' ' + (team === viewerTeam ? 'own' : 'rival') +
+        (resolvedTrick.length && resolvingWinnerTeam === team ? ' receiving' : '')}
+      data-team={team}
+      aria-label={'تیم ' + (team === 0 ? 'الف' : 'ب') + ': ' + count + ' دور جمع‌شده'}
     >
-      <div className="capture-card-stack">
-        {Array.from({ length: Math.min(count, 7) }).map((_, index) => (
+      <div className="capture-stack">
+        {Array.from({ length: Math.min(count, 5) }).map((_, index) => (
           <PlayingCard
             key={String(team) + '-' + String(index)}
             code="BACK"
             isPlayable={false}
-            style={{ transform: 'translate(' + (index * 3) + 'px, ' + (-index * 2) + 'px) rotate(' + ((index - 3) * 3) + 'deg)' }}
+            style={{ transform: 'translate(' + (index * 3.2) + 'px, ' + (-index * 2.1) +
+              'px) rotate(' + ((index - 2) * 3) + 'deg)' }}
           />
         ))}
-        <span className="capture-count">{count}</span>
+        <span className="capture-total">{count}</span>
       </div>
-      <span className="capture-label">{label}</span>
+      <span className="capture-caption">{team === viewerTeam ? 'تیم شما' : 'حریف'}</span>
     </div>
   );
 
   const sendChat = (event: React.FormEvent) => {
     event.preventDefault();
-    const text = chatDraft.trim().slice(0, 150);
-    if (!text) return;
-    onSendChat(text);
+    const message = chatDraft.trim().slice(0, 150);
+    if (!message) return;
+    onSendChat(message);
     setChatDraft('');
+    chatInputRef.current?.focus();
   };
 
+  const statusText = motionLocked
+    ? 'در حال جمع‌شدن کارت‌ها'
+    : isMyTurn
+      ? 'نوبت شماست'
+      : currentTurnSeat !== null && currentTurnSeat !== undefined
+        ? 'نوبت ' + (players.find((player) => player?.seat === currentTurnSeat)?.name || 'حریف')
+        : 'منتظر حرکت';
+
   return (
-    <div className="hokm-game-layout royal-game-layout">
-      <div className="hokm-game-status">
-        <div className="phase-chip">{phaseLabel}</div>
-        {trumpSuit && <div className="trump-status-chip">حکم: <b>{SUIT_NAMES[trumpSuit] || trumpSuit}</b></div>}
-        <div className={'turn-status-chip ' + (isMyTurn ? 'my-turn' : '')}>
-          {isMotionLocked
-            ? 'در حال جمع‌کردن دست…'
-            : isMyTurn
-              ? 'نوبت شماست'
-              : currentTurnSeat !== null && currentTurnSeat !== undefined
-                ? 'نوبت ' + (players.find((player) => player?.seat === currentTurnSeat)?.name || 'حریف')
-                : 'منتظر حرکت'}
+    <div className="game-layout">
+      <header className="game-statusbar">
+        <div className="statusbar-main">
+          <span className="status-eyebrow">ROYAL HOKM</span>
+          <span className="status-phase">{phase}</span>
         </div>
-        {turnDeadline > 0 && ['playing', 'trump_selection', 'two_player_draft'].includes(publicState?.stage) && (
-          <div className={'turn-deadline-chip ' + (turnDeadline - now <= 5 ? 'urgent' : '')}>
-            {Math.max(0, Math.ceil(turnDeadline - now))} ثانیه
-          </div>
-        )}
-        {mySeat < 0 && <div className="spectator-chip">تماشاگر</div>}
-      </div>
-
-      <div className="royal-table-shell">
-        <div className="hokm-table royal-hokm-table">
-          <div className="table-watermark" aria-hidden="true">♛</div>
-          <div className="table-ornament top-ornament" aria-hidden="true">✦</div>
-          <div className="table-ornament bottom-ornament" aria-hidden="true">✦</div>
+        <div className="statusbar-indicators">
           {trumpSuit && (
-            <div className="trump-badge royal-trump-badge">
-              <span>خال حکم</span>
-              <strong className={trumpSuit === 'H' || trumpSuit === 'D' ? 'suit-red' : ''}>{SUIT_NAMES[trumpSuit] || trumpSuit}</strong>
-            </div>
+            <span className="status-chip trump-chip">
+              <span>حکم</span>
+              <b className={SUITS[trumpSuit]?.red ? 'suit-red' : ''}>{suitLabel(trumpSuit)}</b>
+            </span>
           )}
-          <div className="score-banner royal-score-banner">{renderScore()}</div>
+          <span className={'status-chip turn-chip ' + (isMyTurn ? 'your-turn' : '') + (motionLocked ? ' is-resolving' : '')}>
+            <i className="turn-indicator" />
+            {statusText}
+          </span>
+          {mySeat < 0 && <span className="status-chip spectator-chip">تماشاگر</span>}
+          {turnDeadline > 0 && ['playing', 'trump_selection', 'two_player_draft'].includes(publicState?.stage) && (
+            <TurnCountdown deadline={turnDeadline} />
+          )}
+        </div>
+      </header>
 
-          {isFourPlayer && (
+      <div className="game-content">
+        <main className="game-main">
+          <section className="table-frame" aria-label="میز بازی حکم">
+            <div className="table-rim">
+              <div className="table-felt">
+                <div className="felt-grain" aria-hidden="true" />
+                <div className="felt-center-emblem" aria-hidden="true"><span>♛</span><i /></div>
+                <div className="felt-corner top-left" aria-hidden="true">✦</div>
+                <div className="felt-corner top-right" aria-hidden="true">✦</div>
+                <div className="felt-corner bottom-left" aria-hidden="true">✦</div>
+                <div className="felt-corner bottom-right" aria-hidden="true">✦</div>
+
+                <div className="table-top-info">
+                  <div className="match-score">
+                    {isFourPlayer ? (
+                      <>
+                        <div className={'score-team ' + (viewerTeam === 0 ? 'mine' : '')}>
+                          <span className="score-team-name">{viewerTeam === 0 ? 'تیم شما' : 'تیم الف'}</span>
+                          <b>{teamScoreA}</b>
+                        </div>
+                        <span className="score-divider">:</span>
+                        <div className={'score-team ' + (viewerTeam === 1 ? 'mine' : '')}>
+                          <span className="score-team-name">{viewerTeam === 1 ? 'تیم شما' : 'تیم ب'}</span>
+                          <b>{teamScoreB}</b>
+                        </div>
+                      </>
+                    ) : (
+                      <span className="individual-score-title">امتیاز مسابقه</span>
+                    )}
+                  </div>
+                  {trumpSuit && (
+                    <div className="table-trump-medallion">
+                      <span>خال حکم</span>
+                      <b className={SUITS[trumpSuit]?.red ? 'suit-red' : ''}>{SUITS[trumpSuit]?.symbol}</b>
+                    </div>
+                  )}
+                </div>
+
+                {isFourPlayer && (
+                  <>
+                    {renderCapturePile(viewerTeam, ownTricks, 'bottom')}
+                    {renderCapturePile(viewerTeam === 0 ? 1 : 0, rivalTricks, 'top')}
+                  </>
+                )}
+
+                <div className="table-seats">
+                  {totalSeats === 4 && renderPlayer(relativePlayer(2), 'seat-top')}
+                  {totalSeats === 2 && renderPlayer(relativePlayer(1), 'seat-top')}
+                  {totalSeats === 3 && (
+                    <>
+                      {renderPlayer(relativePlayer(1), 'seat-three-left')}
+                      {renderPlayer(relativePlayer(2), 'seat-three-right')}
+                    </>
+                  )}
+                  {totalSeats === 4 && renderPlayer(relativePlayer(3), 'seat-left')}
+                  {totalSeats === 4 && renderPlayer(relativePlayer(1), 'seat-right')}
+                  {renderPlayer(myPlayer, 'seat-bottom')}
+                </div>
+
+                <div
+                  className={'trick-center ' + (resolvedTrick.length ? 'is-resolving ' : '') +
+                    (dropTargetActive ? 'drop-active' : '')}
+                  ref={dropZoneRef}
+                  aria-label="محدوده‌ی انداختن کارت"
+                >
+                  <div className="trick-drop-ring" aria-hidden="true" />
+                  {dropTargetActive && <div className="drop-halo" aria-hidden="true" />}
+                  {resolvedTrick.length > 0 && <div className="trick-burst" aria-hidden="true" />}
+                  {(currentTrick.length > 0 ? currentTrick : resolvedTrick).map((played: any, index: number) => {
+                    const vector = resolvingWinner === null ? [0, 0] : collectVector(resolvingWinner);
+                    return (
+                      <div
+                        key={String(publicState?.hand_number || 0) + '-' + played.seat + '-' + played.card}
+                        className="trick-card-position"
+                        style={{
+                          transform: trickCardTransform(played.seat),
+                          zIndex: index + 4,
+                          '--collect-x': vector[0] + 'px',
+                          '--collect-y': vector[1] + 'px',
+                          '--card-delay': (index * 85) + 'ms',
+                        } as React.CSSProperties}
+                      >
+                        <div className="trick-card-arrive">
+                          <PlayingCard code={played.card} isPlayable={false} />
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {currentTrick.length === 0 && resolvedTrick.length === 0 && (
+                    <div className="trick-empty-mark">
+                      <span>✦</span>
+                      <small>{dropTargetActive ? 'اینجا رها کن' : 'میدان بازی'}</small>
+                    </div>
+                  )}
+                </div>
+
+                {resolvedTrick.length > 0 && resolvingWinner !== null && (
+                  <div className="trick-winner-banner">
+                    <span>♛</span>
+                    <b>{players.find((player) => player?.seat === resolvingWinner)?.name || 'بازیکن'}</b>
+                    <small>این دور را برد</small>
+                  </div>
+                )}
+                {motionLocked && <div className="motion-lock-label">کارت‌ها در حال جمع‌شدن هستند…</div>}
+              </div>
+            </div>
+          </section>
+
+          <section className="player-hand-panel">
+            <div className="hand-panel-heading">
+              <div><span className="hand-overline">YOUR HAND</span><h2>کارت‌های شما</h2></div>
+              <div className="hand-heading-meta">
+                <span className="hand-count">{cards.length} <small>کارت</small></span>
+                {isMyTurn && !motionLocked && <span className="hand-turn-badge">نوبت شما</span>}
+                {motionLocked && <span className="hand-turn-badge resolving">در حال اجرا</span>}
+              </div>
+            </div>
+
+            <div className={'hand-scroll-area ' + (!isMyTurn ? 'not-turn' : '')}>
+              <div className="hand-cards">
+                {cards.map((code) => {
+                  const playable = isMyTurn && legalMoves.includes(code);
+                  return (
+                    <PlayingCard
+                      key={code}
+                      code={code}
+                      isPlayable={playable}
+                      isDisabled={!playable}
+                      isSelected={selectedCard === code}
+                      isDragging={dragRef.current?.code === code && dragPreviewVisible}
+                      onPointerDown={(event) => beginDrag(event, code)}
+                      onKeyDown={(event) => handleCardKeyDown(event, code)}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="hand-action-row">
+              <div className="hand-instruction">
+                {isMyTurn ? 'کارت را بکش و وسط میز رها کن، یا انتخابش کن.' : 'با رسیدن نوبت شما کارت‌ها فعال می‌شوند.'}
+              </div>
+              {selectedCard && isMyTurn && (
+                <div className="selected-card-actions">
+                  <span className="selected-card-label">{formatCard(selectedCard)}</span>
+                  <button className="action-primary" onClick={playSelectedCard}>بازی کارت</button>
+                  <button className="action-quiet" onClick={() => setSelectedCard(null)}>لغو</button>
+                </div>
+              )}
+            </div>
+            {dragHint && <div className="inline-hint" role="status">{dragHint}</div>}
+          </section>
+        </main>
+
+        <aside className={'chat-panel ' + (chatOpen ? 'expanded' : 'collapsed')}>
+          <button className="chat-panel-title" onClick={() => setChatOpen((open) => !open)} aria-expanded={chatOpen}>
+            <span className="chat-icon">✉</span>
+            <span className="chat-title-text"><b>گفت‌وگوی میز</b><small>ارتباط زنده‌ی بازیکنان</small></span>
+            <span className="chat-message-count">{chatMessages.length}</span>
+            <span className="chat-chevron">{chatOpen ? '−' : '+'}</span>
+          </button>
+          {chatOpen && (
             <>
-              {renderCapturePile(viewerTeam, ownTricks, myLabel, 'bottom')}
-              {renderCapturePile(viewerTeam === 0 ? 1 : 0, rivalTricks, rivalLabel, 'top')}
+              <div className="chat-messages" ref={chatScrollRef} aria-live="polite">
+                {chatMessages.length === 0 && (
+                  <div className="chat-empty">
+                    <span>✧</span><b>میز هنوز ساکت است</b><small>اولین پیام را بفرست و بازی را گرم کن.</small>
+                  </div>
+                )}
+                {chatMessages.map((message: any, index: number) => {
+                  const mine = Number(message.user_id) === Number(myUserId);
+                  const content = message.text || message.reaction || '';
+                  return (
+                    <div
+                      key={message.id || String(message.user_id) + '-' + String(message.sent_at) + '-' + index}
+                      className={'chat-message ' + (mine ? 'mine ' : '') + (message.isReaction ? 'reaction' : '')}
+                    >
+                      {!mine && <span className="chat-author">{message.name || 'بازیکن'}</span>}
+                      <span className="chat-bubble">{message.isReaction ? '✦ ' : ''}{content}</span>
+                      <time>{formatTime(Number(message.sent_at || 0))}</time>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="chat-reactions">
+                {QUICK_REACTIONS.map((reaction) => (
+                  <button key={reaction} type="button" onClick={() => onSendChat(reaction)}>{reaction}</button>
+                ))}
+              </div>
+              <form className="chat-input-row" onSubmit={sendChat}>
+                <input
+                  ref={chatInputRef}
+                  value={chatDraft}
+                  onChange={(event) => setChatDraft(event.target.value)}
+                  maxLength={150}
+                  placeholder="پیامت را بنویس..."
+                  aria-label="پیام چت"
+                />
+                <button type="submit" disabled={!chatDraft.trim()} aria-label="ارسال پیام">➤</button>
+              </form>
             </>
           )}
-
-          <div className="table-seat-top">
-            {totalSeats === 4 && renderPlayerPod(getRelativePlayer(2))}
-            {totalSeats === 2 && renderPlayerPod(getRelativePlayer(1))}
-            {totalSeats === 3 && <>{renderPlayerPod(getRelativePlayer(1))}{renderPlayerPod(getRelativePlayer(2))}</>}
-          </div>
-
-          <div className={'table-middle-row ' + (totalSeats === 3 ? 'three-player' : '')}>
-            {totalSeats === 4 ? renderPlayerPod(getRelativePlayer(3)) : <div className="side-seat-placeholder" />}
-            <div className={'trick-center ' + (resolvedTrick.length ? 'resolving ' : '') +
-              (dragSession?.moved ? 'drop-target-ready' : '')}>
-              {resolvedTrick.length > 0 && <div className="trick-vfx" aria-hidden="true" />}
-              {(currentTrick.length > 0 ? currentTrick : resolvedTrick).map((played: any, idx: number) => {
-                const vector = resolvingWinner === null ? [0, 0] : getCollectVector(resolvingWinner);
-                return (
-                  <div
-                    key={String(publicState?.hand_number || 0) + '-' + played.seat + '-' + played.card}
-                    className="trick-card-slot"
-                    style={{
-                      transform: getTrickCardTransform(played.seat),
-                      zIndex: idx + 5,
-                      '--collect-x': vector[0] + 'px',
-                      '--collect-y': vector[1] + 'px',
-                      '--deal-delay': (idx * 90) + 'ms',
-                    } as React.CSSProperties}
-                  >
-                    <div className="trick-card-motion">
-                      <PlayingCard code={played.card} isPlayable={false} />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            {totalSeats === 4 ? renderPlayerPod(getRelativePlayer(1)) : <div className="side-seat-placeholder" />}
-          </div>
-
-          <div className="table-seat-bottom">
-            {renderPlayerPod(myPlayer)}
-          </div>
-          {resolvedTrick.length > 0 && resolvingWinner !== null && (
-            <div className="trick-resolution-chip royal-winner-callout">
-              ♛ دست برای {players.find((player) => player?.seat === resolvingWinner)?.name || 'بازیکن'} شد
-            </div>
-          )}
-          {isMotionLocked && <div className="collecting-banner">کارت‌ها در حال جمع‌شدن هستند</div>}
-        </div>
+        </aside>
       </div>
 
-      <section className="hand-section royal-hand-section">
-        <div className="hand-heading">
-          <b>دست شما</b>
-          <span>{myCards.length} کارت</span>
-          {isMyTurn && <span className="hand-your-turn">نوبت شما · کارت را بکشید وسط میز</span>}
-          {isMotionLocked && <span className="hand-your-turn collecting-tag">در حال نمایش حرکت</span>}
-        </div>
-        <div className={'my-hand-container royal-hand-container ' + (!isMyTurn ? 'not-your-turn' : '')}>
-          <div className="my-hand-fan royal-hand-fan">
-            {myCards.map((code) => {
-              const isPlayable = isMyTurn && legalMoves.includes(code);
-              return (
-                <PlayingCard
-                  key={code}
-                  code={code}
-                  isPlayable={isPlayable}
-                  isDisabled={!isPlayable}
-                  isSelected={selectedCard === code}
-                  isDragging={dragSession?.code === code && dragSession.moved}
-                  onPointerDown={(event) => startCardDrag(event, code)}
-                />
-              );
-            })}
-          </div>
-        </div>
-        {dragSession?.moved && createPortal(
-          <div
-            className="drag-ghost"
-            style={{
-              left: dragSession.x - dragSession.grabOffsetX,
-              top: dragSession.y - dragSession.grabOffsetY,
-              width: dragSession.width,
-              height: dragSession.height,
-              transformOrigin: dragSession.grabOffsetX + 'px ' + dragSession.grabOffsetY + 'px',
-            }}
-          >
-            <PlayingCard code={dragSession.code} isPlayable={false} />
-          </div>,
-          document.body,
-        )}
-        {isMyTurn && selectedCard && (
-          <div className="selected-card-action">
-            <span>انتخاب‌شده: {formatCard(selectedCard)}</span>
-            <button className="gold-btn play-selected-btn" onClick={submitSelectedCard}>بازی کردن کارت</button>
-            <button className="clear-selection-btn" onClick={() => setSelectedCard(null)}>لغو انتخاب</button>
-          </div>
-        )}
-        {!isMyTurn && publicState?.stage === 'playing' && !isMotionLocked && (
-          <div className="waiting-turn-note">کارت‌ها تا رسیدن نوبت شما غیرفعال هستند.</div>
-        )}
-        {dragHint && <div className="drag-hint">{dragHint}</div>}
-      </section>
-
-      <section className={'royal-chat-panel ' + (chatOpen ? 'open' : 'closed')}>
-        <button className="chat-panel-heading" onClick={() => setChatOpen((open) => !open)} aria-expanded={chatOpen}>
-          <span className="chat-heading-icon">✉</span>
-          <span>گفت‌وگوی میز</span>
-          <span className="chat-heading-count">{chatMessages.length}</span>
-          <span className="chat-expand-indicator">{chatOpen ? '−' : '+'}</span>
-        </button>
-        {chatOpen && (
-          <>
-            <div className="chat-message-list" ref={chatScrollRef} aria-live="polite">
-              {chatMessages.length === 0 && <div className="chat-empty-state">هنوز پیامی نیست؛ اولین پیام را بفرست.</div>}
-              {chatMessages.map((message: any, index: number) => {
-                const mine = Number(message.user_id) === Number(myUserId);
-                return (
-                  <div
-                    key={message.id || String(message.user_id) + '-' + String(message.sent_at) + '-' + index}
-                    className={'chat-message ' + (mine ? 'mine ' : '') + (message.isReaction ? 'reaction-message' : '')}
-                  >
-                    {!mine && <span className="chat-message-author">{message.name || 'بازیکن'}</span>}
-                    <span className="chat-message-bubble">{message.isReaction ? '✨ ' : ''}{message.text || message.reaction}</span>
-                    <time>{formatClock(Number(message.sent_at || 0))}</time>
-                  </div>
-                );
-              })}
-            </div>
-            <div className="chat-quick-actions">
-              {QUICK_REACTIONS.map((reaction) => (
-                <button key={reaction} type="button" onClick={() => onSendChat(reaction)}>{reaction}</button>
-              ))}
-            </div>
-            <form className="chat-compose" onSubmit={sendChat}>
-              <input
-                value={chatDraft}
-                onChange={(event) => setChatDraft(event.target.value)}
-                maxLength={150}
-                placeholder="پیام خود را بنویس..."
-                aria-label="پیام چت"
-              />
-              <button type="submit" disabled={!chatDraft.trim()} aria-label="ارسال پیام">➤</button>
-            </form>
-          </>
-        )}
-      </section>
+      {dragPreviewVisible && dragRef.current && createPortal(
+        <div
+          className="drag-preview-layer"
+          ref={(element) => {
+            dragGhostRef.current = element;
+            if (element && dragRef.current) setGhostPosition(element, dragRef.current);
+          }}
+          aria-hidden="true"
+        >
+          <PlayingCard code={dragRef.current.code} isPlayable={false} className="drag-preview-card" />
+        </div>,
+        document.body,
+      )}
     </div>
   );
 };
