@@ -7,6 +7,7 @@ on:
       - feat/chess-room-lifecycle-and-bot
       - fix/hokm-engine-ui-animation
       - feat/hokm-premium-visual-rebuild
+      - perf/hokm-render-budget
   pull_request:
     branches:
       - main
