@@ -52,6 +52,24 @@ const formatTime = (timestamp: number) => {
   return new Date(timestamp * 1000).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' });
 };
 
+const ChatMessage = React.memo(({
+  message,
+  mine,
+}: {
+  message: any;
+  mine: boolean;
+}) => {
+  const content = message.text || message.reaction || '';
+  return (
+    <div className={'chat-message ' + (mine ? 'mine ' : '') + (message.isReaction ? 'reaction' : '')}>
+      {!mine && <span className="chat-author">{message.name || 'بازیکن'}</span>}
+      <span className="chat-bubble">{message.isReaction ? '✦ ' : ''}{content}</span>
+      <time>{formatTime(Number(message.sent_at || 0))}</time>
+    </div>
+  );
+});
+ChatMessage.displayName = 'ChatMessage';
+
 const TurnCountdown = memo(({ deadline }: { deadline: number }) => {
   const [seconds, setSeconds] = useState(() =>
     deadline > 0 ? Math.max(0, Math.ceil(deadline - Date.now() / 1000)) : 0,
@@ -118,6 +136,7 @@ const HokmTableComponent: React.FC<HokmTableProps> = ({
   const chatInputRef = useRef<HTMLInputElement | null>(null);
   const motionTimerRef = useRef<number | null>(null);
   const dropZoneRef = useRef<HTMLDivElement | null>(null);
+  const dropZoneRectRef = useRef<DOMRect | null>(null);
 
   const players: any[] = Array.isArray(publicState?.players) ? publicState.players.filter(Boolean) : [];
   const mySeat = Number.isInteger(privateState?.seat) ? privateState.seat : -1;
@@ -248,6 +267,7 @@ const HokmTableComponent: React.FC<HokmTableProps> = ({
 
   const clearDrag = useCallback(() => {
     dragRef.current = null;
+    dropZoneRectRef.current = null;
     if (rafRef.current !== null) {
       window.cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -268,7 +288,7 @@ const HokmTableComponent: React.FC<HokmTableProps> = ({
       if (moved) {
         event.preventDefault();
         if (!active.moved) setDragPreviewVisible(true);
-        const zone = dropZoneRef.current?.getBoundingClientRect();
+        const zone = dropZoneRectRef.current;
         const inside = Boolean(
           zone &&
           event.clientX >= zone.left - 22 &&
@@ -295,7 +315,7 @@ const HokmTableComponent: React.FC<HokmTableProps> = ({
         rafRef.current = null;
       }
 
-      const rect = dropZoneRef.current?.getBoundingClientRect();
+      const rect = dropZoneRectRef.current;
       const padding = Math.max(16, (rect?.width || 100) * 0.12);
       const droppedOnCenter = Boolean(
         moved && rect &&
@@ -306,6 +326,7 @@ const HokmTableComponent: React.FC<HokmTableProps> = ({
       );
 
       dragRef.current = null;
+      dropZoneRectRef.current = null;
       setDragPreviewVisible(false);
       setDropTargetActive(false);
 
@@ -371,6 +392,7 @@ const HokmTableComponent: React.FC<HokmTableProps> = ({
 
     event.preventDefault();
     const rect = button.getBoundingClientRect();
+    dropZoneRectRef.current = dropZoneRef.current?.getBoundingClientRect() || null;
     dragRef.current = {
       code,
       pointerId: event.pointerId,
@@ -705,20 +727,13 @@ const HokmTableComponent: React.FC<HokmTableProps> = ({
                     <span>✧</span><b>میز هنوز ساکت است</b><small>اولین پیام را بفرست و بازی را گرم کن.</small>
                   </div>
                 )}
-                {chatMessages.map((message: any, index: number) => {
-                  const mine = Number(message.user_id) === Number(myUserId);
-                  const content = message.text || message.reaction || '';
-                  return (
-                    <div
-                      key={message.id || String(message.user_id) + '-' + String(message.sent_at) + '-' + index}
-                      className={'chat-message ' + (mine ? 'mine ' : '') + (message.isReaction ? 'reaction' : '')}
-                    >
-                      {!mine && <span className="chat-author">{message.name || 'بازیکن'}</span>}
-                      <span className="chat-bubble">{message.isReaction ? '✦ ' : ''}{content}</span>
-                      <time>{formatTime(Number(message.sent_at || 0))}</time>
-                    </div>
-                  );
-                })}
+                {chatMessages.map((message: any, index: number) => (
+                  <ChatMessage
+                    key={message.id || String(message.user_id) + '-' + String(message.sent_at) + '-' + index}
+                    message={message}
+                    mine={Number(message.user_id) === Number(myUserId)}
+                  />
+                ))}
               </div>
               <div className="chat-reactions">
                 {QUICK_REACTIONS.map((reaction) => (
