@@ -2003,6 +2003,7 @@ select:focus-visible {
   pointer-events: none;
   transform: translate3d(0, 0, 0);
   will-change: transform;
+  contain: layout style paint;
 }
 
 .drag-preview-layer .playing-card {
