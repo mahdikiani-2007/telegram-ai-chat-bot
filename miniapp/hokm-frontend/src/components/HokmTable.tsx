@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { PlayingCard } from './Cards';
 import { triggerHaptic, sounds } from './AudioHaptics';
 
@@ -18,6 +19,10 @@ interface DragSession {
   startY: number;
   x: number;
   y: number;
+  grabOffsetX: number;
+  grabOffsetY: number;
+  width: number;
+  height: number;
   moved: boolean;
 }
 
@@ -166,7 +171,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
       if (!moved) {
         setDragHint('');
         if (isMyTurn && legalMoves.includes(active.code)) {
-          setSelectedCard((current) => current === active.code ? null : active.code);
+          setSelectedCard(active.code);
           triggerHaptic('light');
         }
         return;
@@ -221,6 +226,7 @@ export const HokmTable: React.FC<HokmTableProps> = ({
     if (!isMyTurn || !legalMoves.includes(cardCode)) return;
     event.preventDefault();
     event.stopPropagation();
+    const cardRect = event.currentTarget.getBoundingClientRect();
     const initial: DragSession = {
       code: cardCode,
       pointerId: event.pointerId,
@@ -228,11 +234,14 @@ export const HokmTable: React.FC<HokmTableProps> = ({
       startY: event.clientY,
       x: event.clientX,
       y: event.clientY,
+      grabOffsetX: event.clientX - cardRect.left,
+      grabOffsetY: event.clientY - cardRect.top,
+      width: cardRect.width,
+      height: cardRect.height,
       moved: false,
     };
     dragRef.current = initial;
     setDragSession(initial);
-    setSelectedCard(cardCode);
     setDragHint('');
   };
 
@@ -481,10 +490,19 @@ export const HokmTable: React.FC<HokmTableProps> = ({
             })}
           </div>
         </div>
-        {dragSession?.moved && (
-          <div className="drag-ghost" style={{ left: dragSession.x, top: dragSession.y }}>
+        {dragSession?.moved && createPortal(
+          <div
+            className="drag-ghost"
+            style={{
+              left: dragSession.x - dragSession.grabOffsetX,
+              top: dragSession.y - dragSession.grabOffsetY,
+              width: dragSession.width,
+              height: dragSession.height,
+            }}
+          >
             <PlayingCard code={dragSession.code} isPlayable={false} />
-          </div>
+          </div>,
+          document.body,
         )}
         {isMyTurn && selectedCard && (
           <div className="selected-card-action">
